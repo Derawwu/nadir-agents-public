@@ -264,6 +264,6 @@ The parser is whitespace-tolerant. Conflicts trigger additional rounds up to the
 
 ## Related services
 
-- **Plane** (`plane/`) — self-hosted issue tracker, `http://localhost` (see `plane/README.md`). Vendored upstream repo; started/stopped via `docker-compose` from that directory.
+- **Plane** (`plane/`) — self-hosted issue tracker, `http://localhost`. Vendored upstream repo (its own git history, not tracked here — see `docs/plane.md`); started/stopped via `docker-compose` from that directory.
 - **Outline** (`outline/`) — self-hosted wiki, `http://localhost:3002` (see `outline/README.md`). Login uses Mailpit as a local SMTP catcher.
 - **Diagram tool** (`diagram-tool/`) — standalone node-graph diagram editor, integrated into the main frontend's Diagrams tab and Context Tray. See `diagram-tool/README.md`.
