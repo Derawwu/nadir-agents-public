@@ -83,7 +83,18 @@ cd ../diagram-tool/backend && npm install
 cd ../frontend && npm install
 ```
 
-### 3. Run
+### 3. Install git hooks
+
+```powershell
+.\scripts\install-hooks.ps1
+```
+
+Copies `scripts/hooks/*` into `.git/hooks/` (not version-controlled by git
+itself, so re-run this after cloning or whenever a hook script changes).
+Currently installs a `post-commit` hook that fires the `../nadir-agents-data`
+snapshot after every commit here — see "Automatic data export" below.
+
+### 4. Run
 
 Easiest: run `start.bat` from the repo root — it starts Podman, Plane, Outline,
 and the agent backend/frontend in separate windows. The diagram-tool isn't
@@ -154,6 +165,26 @@ while the frontend polls `GET /api/data-export/status`, then reports
 (hover for the error) before resetting to idle after a few seconds. Requires
 the Outline/Plane containers to be running and `D:\nadir-agents-data` to
 exist alongside this repo — see `../nadir-agents-data/README.md`.
+
+### Automatic data export (git hook)
+
+A `post-commit` hook (`scripts/hooks/post-commit`, installed via
+`.\scripts\install-hooks.ps1`) fires the same `snapshot.ps1` automatically
+after every commit made in **this** repo — no button click needed. It:
+
+- Launches `snapshot.ps1` fully detached (`cmd start` + `powershell -WindowStyle
+  Hidden`) so it never blocks or slows down `git commit`.
+- Never fails your commit: the hook always exits `0`. If the snapshot itself
+  errors, that only shows up in `nadir-agents-data/snapshot.log` — check
+  there if a commit doesn't seem to have produced a new snapshot.
+- Only touches the separate `nadir-agents-data` repo (its own `.git`) —
+  can't recurse into or interfere with this repo's own commit.
+- Pushes the data-repo commit if that repo ever has a remote configured;
+  today (no remote) it just logs `[SKIP] no remote configured, skipping
+  push` and does nothing further.
+
+Re-run `.\scripts\install-hooks.ps1` after cloning fresh or editing the hook
+— `.git/hooks/` itself is never version-controlled.
 
 ## Architecture
 
