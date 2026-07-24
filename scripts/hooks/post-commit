@@ -1,0 +1,34 @@
+#!/bin/sh
+# post-commit: fires the ../nadir-agents-data snapshot (Outline + Plane +
+# diagrams dump -> commit, and push if that repo ever gets a remote) after
+# every commit made in THIS repo.
+#
+# - Detached via `cmd start` so it survives this shell/hook process exiting
+#   and never blocks the commit. Runs in its own window-less process tree,
+#   not as a background job of this script, which is more reliable on
+#   Windows than a plain `&` background job tied to the invoking shell.
+# - Never fails or blocks the commit: this hook always exits 0 regardless
+#   of whether the snapshot succeeds. All snapshot output goes to
+#   nadir-agents-data/snapshot.log, not here - check that file if a
+#   snapshot seems to be missing.
+# - Only touches the separate nadir-agents-data repo (different .git) via
+#   snapshot.ps1's own git calls there - never re-enters or recurses into
+#   this repo's git history, so it can't trigger itself.
+#
+# Not version-controlled by git itself (.git/hooks/ isn't tracked) - this
+# file lives at scripts/hooks/post-commit and is installed into .git/hooks/
+# by scripts/install-hooks.ps1. Re-run that script after editing this file.
+
+DATA_REPO="D:/nadir-agents-data"
+SNAPSHOT_WIN="D:\\nadir-agents-data\\snapshot.ps1"
+
+# Data repo not set up on this machine (e.g. a fresh clone before running
+# the setup steps in nadir-agents-data) - nothing to do.
+if [ ! -f "$DATA_REPO/snapshot.ps1" ]; then
+  exit 0
+fi
+
+# `//c` (not `/c`) stops Git Bash/MSYS from mangling the path-like argument.
+cmd.exe //c start "" /min powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$SNAPSHOT_WIN" >/dev/null 2>&1
+
+exit 0
