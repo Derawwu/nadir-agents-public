@@ -1,0 +1,46 @@
+services:
+  outline:
+    image: outlinewiki/outline:latest
+    restart: unless-stopped
+    ports:
+      - "3002:3000"
+    env_file: .env
+    depends_on:
+      - outline-postgres
+      - outline-redis
+      - outline-mailpit
+    networks:
+      - outline-network
+
+  outline-postgres:
+    image: postgres:15-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: outline
+      POSTGRES_PASSWORD: outline_password
+      POSTGRES_DB: outline
+    volumes:
+      - outline-pgdata:/var/lib/postgresql/data
+    networks:
+      - outline-network
+
+  outline-redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    networks:
+      - outline-network
+
+  outline-mailpit:
+    image: axllent/mailpit:latest
+    restart: unless-stopped
+    ports:
+      - "8025:8025"
+    networks:
+      - outline-network
+
+volumes:
+  outline-pgdata:
+
+networks:
+  outline-network:
+    driver: bridge

@@ -1,0 +1,60 @@
+/**
+ * Express application entry point.
+ *
+ * Startup order:
+ *   1. Run DB migrations (idempotent schema creation)
+ *   2. Seed agents (idempotent — skips if already present)
+ *   3. Mount routes
+ *   4. Start HTTP server
+ */
+
+import express from 'express';
+import cors from 'cors';
+import dotenv from 'dotenv';
+import { runMigrations } from './db/schema';
+import { seedAgents } from './db/seed';
+import agentsRouter from './routes/agents';
+import featuresRouter from './routes/features';
+import chatRouter from './routes/chat';
+import roundtableRouter from './routes/roundtable';
+import planeRouter from './routes/plane';
+import outlineRouter from './routes/outline';
+import diagramsRouter from './routes/diagrams';
+
+dotenv.config();
+
+const PORT = parseInt(process.env.PORT ?? '3001', 10);
+
+// Initialize database before anything else.
+runMigrations();
+seedAgents();
+
+const app = express();
+
+app.use(
+  cors({
+    // In development, the Vite dev server runs on 5173.
+    // In production, frontend is served statically from the same origin.
+    origin: process.env.CORS_ORIGIN ?? 'http://localhost:5173',
+    credentials: true,
+  })
+);
+
+app.use(express.json());
+
+// Health check — useful for docker/CI readiness probes.
+app.get('/health', (_req, res) => {
+  res.json({ ok: true });
+});
+
+app.use('/api/agents', agentsRouter);
+app.use('/api/features', featuresRouter);
+app.use('/api/chat', chatRouter);
+app.use('/api/roundtable', roundtableRouter);
+app.use('/api/plane', planeRouter);
+app.use('/api/outline', outlineRouter);
+app.use('/api/diagrams', diagramsRouter);
+
+app.listen(PORT, () => {
+  console.log(`Nadir agents backend running on http://localhost:${PORT}`);
+});

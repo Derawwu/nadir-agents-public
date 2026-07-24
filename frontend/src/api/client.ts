@@ -1,0 +1,482 @@
+/**
+ * Typed API client for the Nadir agents backend.
+ *
+ * All endpoints match the backend route definitions exactly.
+ * SSE streaming endpoints expose an onEvent callback pattern rather than
+ * returning a promise — callers register handlers and the function returns
+ * a cleanup function to abort the stream if needed.
+ */
+
+const BASE = '/api';
+
+// ─── Shared types (mirror backend types) ─────────────────────────────────────
+
+export interface Agent {
+  id: number;
+  name: string;
+  role: string;
+  system_prompt: string;
+  created_at: string;
+}
+
+export type FeatureStatus = 'backlog' | 'active' | 'review' | 'closed';
+export type FeaturePhase = 'kickoff' | 'spec' | 'design' | 'build' | 'review';
+
+export interface Feature {
+  id: number;
+  name: string;
+  description: string | null;
+  status: FeatureStatus;
+  phase: FeaturePhase;
+  locked_decisions: string[] | null;
+  jira_key: string | null;
+  jira_type: string | null;
+  jira_parent_key: string | null;
+  jira_status: string | null;
+  jira_synced_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export type MemoryType = 'decision' | 'lore' | 'technical' | 'visual' | 'flag' | 'conflict';
+
+// ─── SSE event types emitted by the backend ──────────────────────────────────
+
+export type ChatSSEEvent =
+  | { type: 'chunk'; text: string }
+  | { type: 'done'; conversationId: number }
+  | { type: 'error'; error: string };
+
+export type RoundtableSSEEvent =
+  | { type: 'roundtable_created'; roundtableId: number }
+  | { type: 'round_start'; round: number }
+  | { type: 'agent_start'; agentId: number; agentName: string; round: number }
+  | { type: 'chunk'; agentId: number; agentName: string; round: number; chunk: string }
+  | {
+      type: 'agent_done';
+      agentId: number;
+      agentName: string;
+      round: number;
+      hasConflict: boolean;
+      conflictSummary: string | null;
+      conflictTarget: string | null;
+    }
+  | { type: 'roundtable_done'; status: 'completed' | 'terminated' }
+  | { type: 'summarizing' }
+  | {
+      type: 'summary';
+      summary: {
+        decisions: string[];
+        openConflicts: string[];
+        actionItems: Record<string, string[]>;
+      };
+      outline: { saved: boolean };
+    }
+  | { type: 'error'; error: string };
+
+// ─── Agents ──────────────────────────────────────────────────────────────────
+
+export async function fetchAgents(): Promise<Agent[]> {
+  const res = await fetch(`${BASE}/agents`);
+  if (!res.ok) throw new Error(`fetchAgents failed: ${res.status}`);
+  return res.json() as Promise<Agent[]>;
+}
+
+// ─── Features ────────────────────────────────────────────────────────────────
+
+export async function fetchFeatures(): Promise<Feature[]> {
+  const res = await fetch(`${BASE}/features`);
+  if (!res.ok) throw new Error(`fetchFeatures failed: ${res.status}`);
+  return res.json() as Promise<Feature[]>;
+}
+
+export async function createFeature(params: {
+  name: string;
+  description?: string;
+  phase?: FeaturePhase;
+  locked_decisions?: string[];
+}): Promise<Feature> {
+  const res = await fetch(`${BASE}/features`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) throw new Error(`createFeature failed: ${res.status}`);
+  return res.json() as Promise<Feature>;
+}
+
+export async function updateFeature(
+  id: number,
+  params: Partial<Pick<Feature, 'name' | 'description' | 'status' | 'phase' | 'locked_decisions'>>
+): Promise<Feature> {
+  const res = await fetch(`${BASE}/features/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) throw new Error(`updateFeature failed: ${res.status}`);
+  return res.json() as Promise<Feature>;
+}
+
+export async function syncPlane(): Promise<{ synced: number; skipped: number; timestamp: string }> {
+  const res = await fetch(`${BASE}/plane/sync`, { method: 'POST' });
+  if (!res.ok) throw new Error(`syncPlane failed: ${res.status}`);
+  return res.json() as Promise<{ synced: number; skipped: number; timestamp: string }>;
+}
+
+export interface StoredMessage {
+  id: number;
+  role: 'user' | 'assistant';
+  content: string;
+  created_at: string;
+}
+
+export interface ConversationHistory {
+  conversationId: number | null;
+  messages: StoredMessage[];
+}
+
+export async function fetchConversationHistory(
+  agentId: number,
+  featureId: number | null
+): Promise<ConversationHistory> {
+  const params = new URLSearchParams({ agentId: String(agentId) });
+  if (featureId !== null) params.set('featureId', String(featureId));
+  const res = await fetch(`${BASE}/chat/conversation?${params}`);
+  if (!res.ok) throw new Error(`fetchConversationHistory failed: ${res.status}`);
+  return res.json() as Promise<ConversationHistory>;
+}
+
+// ─── Chat ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Sends a chat message and streams the response.
+ * Returns a cleanup function that aborts the request when called.
+ */
+/**
+ * Posts to an SSE endpoint and dispatches each `data: <json>` event to onEvent.
+ * Returns a cleanup function that aborts the in-flight request.
+ */
+function postSSE<T>(url: string, body: unknown, onEvent: (event: T) => void): () => void {
+  const controller = new AbortController();
+
+  (async () => {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+
+    if (!res.ok || !res.body) {
+      onEvent({ type: 'error', error: `Request failed: ${res.status}` } as T);
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    // eslint-disable-next-line no-constant-condition
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n\n');
+      buffer = lines.pop() ?? '';
+
+      for (const line of lines) {
+        if (line.startsWith('data: ')) {
+          try {
+            const event = JSON.parse(line.slice(6)) as T;
+            onEvent(event);
+          } catch {
+            // Malformed event — skip silently.
+          }
+        }
+      }
+    }
+  })().catch((err: unknown) => {
+    if (err instanceof Error && err.name !== 'AbortError') {
+      onEvent({ type: 'error', error: err.message } as T);
+    }
+  });
+
+  return () => controller.abort();
+}
+
+export function sendChatMessage(
+  params: {
+    agentId: number;
+    featureId?: number | null;
+    message: string;
+    conversationId?: number | null;
+  },
+  onEvent: (event: ChatSSEEvent) => void
+): () => void {
+  return postSSE<ChatSSEEvent>(`${BASE}/chat/message`, params, onEvent);
+}
+
+export async function saveMemory(params: {
+  conversationId: number;
+  agentId: number;
+  featureId?: number | null;
+  type: MemoryType;
+  content: string;
+}): Promise<{ memoryId: number }> {
+  const res = await fetch(`${BASE}/chat/memory`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) throw new Error(`saveMemory failed: ${res.status}`);
+  return res.json() as Promise<{ memoryId: number }>;
+}
+
+// ─── Roundtable ──────────────────────────────────────────────────────────────
+
+/**
+ * Starts a roundtable and streams progress events.
+ * Returns a cleanup function that aborts the request.
+ */
+export function startRoundtable(
+  params: { featureId: number; topic: string; agentIds?: number[] },
+  onEvent: (event: RoundtableSSEEvent) => void
+): () => void {
+  return postSSE<RoundtableSSEEvent>(`${BASE}/roundtable/start`, params, onEvent);
+}
+
+/**
+ * Sends a follow-up message into an existing (completed/terminated) roundtable,
+ * running another discussion round among the given (or previous) participants.
+ * Emits the same event types as startRoundtable, minus `roundtable_created`.
+ */
+export function continueRoundtable(
+  roundtableId: number,
+  params: { message: string; agentIds?: number[] },
+  onEvent: (event: RoundtableSSEEvent) => void
+): () => void {
+  return postSSE<RoundtableSSEEvent>(
+    `${BASE}/roundtable/${roundtableId}/continue`,
+    params,
+    onEvent
+  );
+}
+
+// ─── Outline ──────────────────────────────────────────────────────────────────
+
+export type OutlineAgentRole = 'narrator' | 'architect' | 'uxui' | 'analyst';
+
+/** Maps agent display name (as stored in DB) to the Outline role key. */
+export function agentNameToOutlineRole(name: string): OutlineAgentRole {
+  if (name === 'UX/UI') return 'uxui';
+  return name.toLowerCase() as OutlineAgentRole;
+}
+
+export interface WikiSearchResult {
+  title: string;
+  snippet: string;
+  url: string;
+}
+
+export async function quickSearchWiki(params: {
+  role: OutlineAgentRole;
+  query: string;
+}): Promise<WikiSearchResult[]> {
+  const res = await fetch(`${BASE}/outline/quick-search`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) throw new Error(`quickSearchWiki failed: ${res.status}`);
+  const data = (await res.json()) as { results: WikiSearchResult[] };
+  return data.results;
+}
+
+export async function saveMemoryToWiki(params: {
+  role: OutlineAgentRole;
+  featureName: string;
+  memoryType: string;
+  content: string;
+}): Promise<void> {
+  const res = await fetch(`${BASE}/outline/memory`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({ error: res.statusText })) as { error?: string };
+    throw new Error(body.error ?? `saveMemoryToWiki failed: ${res.status}`);
+  }
+}
+
+// ─── Wiki / Outline browse ────────────────────────────────────────────────────
+
+export interface WikiDocumentMeta {
+  id: string;
+  title: string;
+  collectionId: string;
+  collectionName: string;
+  updatedAt: string;
+  url: string;
+  parentDocumentId: string | null;
+}
+
+export interface WikiDocumentContent {
+  id: string;
+  title: string;
+  text: string;
+  url: string;
+}
+
+export async function browseWiki(params: {
+  role: OutlineAgentRole;
+  query?: string;
+  collectionId?: string;
+}): Promise<WikiDocumentMeta[]> {
+  const res = await fetch(`${BASE}/outline/browse`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) throw new Error(`browseWiki failed: ${res.status}`);
+  const data = (await res.json()) as { results: WikiDocumentMeta[] };
+  return data.results;
+}
+
+export interface WikiCollection {
+  id: string;
+  name: string;
+}
+
+export async function fetchWikiCollections(): Promise<WikiCollection[]> {
+  const res = await fetch(`${BASE}/outline/collections`);
+  if (!res.ok) throw new Error(`fetchWikiCollections failed: ${res.status}`);
+  const data = (await res.json()) as { collections: WikiCollection[] };
+  return data.collections;
+}
+
+export async function fetchDocumentContent(params: {
+  role: OutlineAgentRole;
+  documentId: string;
+}): Promise<WikiDocumentContent> {
+  const res = await fetch(`${BASE}/outline/document-content`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) throw new Error(`fetchDocumentContent failed: ${res.status}`);
+  return res.json() as Promise<WikiDocumentContent>;
+}
+
+// ─── Plane browse ─────────────────────────────────────────────────────────────
+
+export interface PlaneIssueMeta {
+  id: number;
+  jira_key: string | null;
+  name: string;
+  status: string;
+  phase: string;
+}
+
+export interface PlaneIssueContent {
+  id: number;
+  jira_key: string | null;
+  name: string;
+  description: string | null;
+  locked_decisions: string[] | null;
+  status: string;
+  phase: string;
+  jira_status: string | null;
+}
+
+export async function browsePlane(params: {
+  query?: string;
+  status?: string;
+}): Promise<PlaneIssueMeta[]> {
+  const res = await fetch(`${BASE}/plane/browse`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) throw new Error(`browsePlane failed: ${res.status}`);
+  const data = (await res.json()) as { results: PlaneIssueMeta[] };
+  return data.results;
+}
+
+export async function fetchPlaneIssueContent(params: {
+  featureId: number;
+}): Promise<PlaneIssueContent> {
+  const res = await fetch(`${BASE}/plane/issue-content`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  if (!res.ok) throw new Error(`fetchPlaneIssueContent failed: ${res.status}`);
+  return res.json() as Promise<PlaneIssueContent>;
+}
+
+export async function terminateRoundtable(id: number): Promise<void> {
+  const res = await fetch(`${BASE}/roundtable/${id}/terminate`, { method: 'POST' });
+  if (!res.ok) throw new Error(`terminateRoundtable failed: ${res.status}`);
+}
+
+// ─── Diagrams (proxied to the standalone diagram-tool app) ───────────────────
+
+export interface DiagramMeta {
+  id: number;
+  folder_id: number | null;
+  name: string;
+  description: string | null;
+  folder_path: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function fetchDiagramList(): Promise<DiagramMeta[]> {
+  const res = await fetch(`${BASE}/diagrams/list`);
+  if (!res.ok) throw new Error(`fetchDiagramList failed: ${res.status}`);
+  const data = (await res.json()) as { diagrams: DiagramMeta[] };
+  return data.diagrams;
+}
+
+export async function fetchDiagramAgentFormat(id: string): Promise<string> {
+  const res = await fetch(`${BASE}/diagrams/${id}/agent-format`);
+  if (!res.ok) throw new Error(`fetchDiagramAgentFormat failed: ${res.status}`);
+  const data = (await res.json()) as { text: string };
+  return data.text;
+}
+
+export interface RoundtableTurn {
+  id: number;
+  roundtable_id: number;
+  agent_id: number;
+  round_number: number;
+  content: string;
+  has_conflict: number;
+  conflict_target_agent_id: number | null;
+  conflict_summary: string | null;
+  created_at: string;
+  agent_name: string;
+}
+
+export interface RoundtableDetail {
+  roundtable: {
+    id: number;
+    feature_id: number;
+    topic: string;
+    status: string;
+    current_round: number;
+    max_rounds: number;
+    created_at: string;
+    updated_at: string;
+  };
+  turns: RoundtableTurn[];
+}
+
+export async function fetchRoundtable(id: number): Promise<RoundtableDetail> {
+  const res = await fetch(`${BASE}/roundtable/${id}`);
+  if (!res.ok) throw new Error(`fetchRoundtable failed: ${res.status}`);
+  return res.json() as Promise<RoundtableDetail>;
+}

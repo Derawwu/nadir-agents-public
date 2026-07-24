@@ -1,0 +1,30 @@
+# Vendored / third-party (own upstream repo, tracked separately)
+plane/
+
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+
+# Env files (copy from .env.example where provided)
+.env
+.env.local
+!.env.example
+
+# SQLite data
+**/data/*.db
+**/data/*.db-shm
+**/data/*.db-wal
+
+# Backups
+backups/
+
+# Local Claude Code settings
+.claude/settings.local.json
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+*.log

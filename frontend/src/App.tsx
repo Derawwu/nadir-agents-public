@@ -1,0 +1,91 @@
+import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom';
+import { ChatPage } from './pages/ChatPage';
+import { RoundtablePage } from './pages/RoundtablePage';
+import { WikiTab } from './components/WikiTab';
+import { PlaneTab } from './components/PlaneTab';
+import { DiagramsTab } from './components/DiagramsTab';
+import { ContextTrayProvider } from './contexts/ContextTrayContext';
+
+export default function App() {
+  return (
+    <ContextTrayProvider>
+      <BrowserRouter>
+        <div className="flex flex-col h-full">
+          {/* Top nav */}
+          <nav className="border-b border-border px-6 py-3 flex items-center gap-6 shrink-0">
+            <span className="text-sm font-medium text-gray-400 mr-4">
+              Nadir <span className="text-accent">Agent Team</span>
+            </span>
+
+            <NavLink
+              to="/"
+              end
+              className={({ isActive }) =>
+                `text-sm transition-colors ${
+                  isActive ? 'text-gray-100' : 'text-gray-500 hover:text-gray-300'
+                }`
+              }
+            >
+              Chat
+            </NavLink>
+
+            <NavLink
+              to="/roundtable"
+              className={({ isActive }) =>
+                `text-sm transition-colors ${
+                  isActive ? 'text-gray-100' : 'text-gray-500 hover:text-gray-300'
+                }`
+              }
+            >
+              Roundtable
+            </NavLink>
+
+            <NavLink
+              to="/wiki"
+              className={({ isActive }) =>
+                `text-sm transition-colors ${
+                  isActive ? 'text-gray-100' : 'text-gray-500 hover:text-gray-300'
+                }`
+              }
+            >
+              Wiki
+            </NavLink>
+
+            <NavLink
+              to="/plane"
+              className={({ isActive }) =>
+                `text-sm transition-colors ${
+                  isActive ? 'text-gray-100' : 'text-gray-500 hover:text-gray-300'
+                }`
+              }
+            >
+              Plane
+            </NavLink>
+
+            <NavLink
+              to="/diagrams"
+              className={({ isActive }) =>
+                `text-sm transition-colors ${
+                  isActive ? 'text-gray-100' : 'text-gray-500 hover:text-gray-300'
+                }`
+              }
+            >
+              Diagrams
+            </NavLink>
+          </nav>
+
+          {/* Page content */}
+          <div className="flex-1 min-h-0">
+            <Routes>
+              <Route path="/" element={<ChatPage />} />
+              <Route path="/roundtable" element={<RoundtablePage />} />
+              <Route path="/wiki" element={<WikiTab />} />
+              <Route path="/plane" element={<PlaneTab />} />
+              <Route path="/diagrams" element={<DiagramsTab />} />
+            </Routes>
+          </div>
+        </div>
+      </BrowserRouter>
+    </ContextTrayProvider>
+  );
+}
