@@ -1,5 +1,6 @@
-# Vendored / third-party (own upstream repo, tracked separately)
-plane/
+# Vendored / third-party (own upstream repo, tracked separately).
+# Anchored to repo root so it doesn't also match backend/src/plane/.
+/plane/
 
 # Dependencies
 node_modules/
@@ -13,12 +14,14 @@ build/
 .env.local
 !.env.example
 
-# SQLite data
+# SQLite data - version-controlled separately in ../nadir-agents-data, see
+# that repo's README. Never committed here.
 **/data/*.db
 **/data/*.db-shm
 **/data/*.db-wal
 
-# Backups
+# Backups (rolling/pruned local disaster-recovery copies - not the permanent
+# ../nadir-agents-data snapshot repo)
 backups/
 
 # Local Claude Code settings
