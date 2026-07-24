@@ -28,7 +28,11 @@ if [ ! -f "$DATA_REPO/snapshot.ps1" ]; then
   exit 0
 fi
 
-# `//c` (not `/c`) stops Git Bash/MSYS from mangling the path-like argument.
-cmd.exe //c start "" /min powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$SNAPSHOT_WIN" >/dev/null 2>&1
+# `//c` (not `/c`) stops Git Bash/MSYS from mangling the path-like argument -
+# same reason we use `-WindowStyle Hidden` (a -flag) instead of `start`'s
+# own `/min` (a /flag) below: MSYS rewrites any single-leading-slash arg
+# that looks like a Unix path, silently turning `/min` into a bogus path
+# and making the whole launch fail.
+cmd.exe //c start "" powershell.exe -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "$SNAPSHOT_WIN" >/dev/null 2>&1
 
 exit 0
