@@ -4,6 +4,7 @@ import { RoundtablePage } from './pages/RoundtablePage';
 import { WikiTab } from './components/WikiTab';
 import { PlaneTab } from './components/PlaneTab';
 import { DiagramsTab } from './components/DiagramsTab';
+import { ExportDataButton } from './components/ExportDataButton';
 import { ContextTrayProvider } from './contexts/ContextTrayContext';
 
 export default function App() {
@@ -72,6 +73,10 @@ export default function App() {
             >
               Diagrams
             </NavLink>
+
+            <div className="ml-auto">
+              <ExportDataButton />
+            </div>
           </nav>
 
           {/* Page content */}

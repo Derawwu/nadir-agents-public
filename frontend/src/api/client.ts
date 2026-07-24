@@ -480,3 +480,30 @@ export async function fetchRoundtable(id: number): Promise<RoundtableDetail> {
   if (!res.ok) throw new Error(`fetchRoundtable failed: ${res.status}`);
   return res.json() as Promise<RoundtableDetail>;
 }
+
+// ─── Data export (Outline + Plane + diagrams snapshot) ───────────────────────
+
+export type DataExportStatus = 'idle' | 'running' | 'success' | 'error';
+
+export interface DataExportJobState {
+  status: DataExportStatus;
+  startedAt: string | null;
+  finishedAt: string | null;
+  message: string | null;
+  commitHash: string | null;
+  commitTimestamp: string | null;
+}
+
+export async function runDataExport(): Promise<DataExportJobState> {
+  const res = await fetch(`${BASE}/data-export/run`, { method: 'POST' });
+  if (res.status !== 202 && res.status !== 409) {
+    throw new Error(`runDataExport failed: ${res.status}`);
+  }
+  return res.json() as Promise<DataExportJobState>;
+}
+
+export async function fetchDataExportStatus(): Promise<DataExportJobState> {
+  const res = await fetch(`${BASE}/data-export/status`);
+  if (!res.ok) throw new Error(`fetchDataExportStatus failed: ${res.status}`);
+  return res.json() as Promise<DataExportJobState>;
+}

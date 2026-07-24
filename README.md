@@ -143,6 +143,18 @@ Frontend starts at `http://localhost:5173`.
 - The **Open editor** link launches the diagram-tool's own canvas UI (`http://localhost:5180`) to create/edit diagrams
 - See `diagram-tool/README.md` for details on the standalone tool itself
 
+### Export data (top-right nav button)
+
+Triggers a one-off snapshot of Outline + Plane + diagrams data into the
+separate `../nadir-agents-data` repo — the same thing `snapshot.ps1` does
+manually, without leaving the app. Click **Export data**; it runs in the
+background (`POST /api/data-export/run`), the button shows **Exporting…**
+while the frontend polls `GET /api/data-export/status`, then reports
+**Exported ✓** (hover for the commit hash/timestamp) or **Export failed**
+(hover for the error) before resetting to idle after a few seconds. Requires
+the Outline/Plane containers to be running and `D:\nadir-agents-data` to
+exist alongside this repo — see `../nadir-agents-data/README.md`.
+
 ## Architecture
 
 ```
@@ -166,6 +178,10 @@ backend/
       diagramClient.ts  # Thin proxy client to the standalone diagram-tool backend
     outline/
       outlineService.ts # Outline wiki integration
+    plane/
+      planeService.ts   # Plane issue tracker integration
+    dataExport/
+      dataExportService.ts # Runs ../nadir-agents-data/snapshot.ps1 on demand, tracks job status
     routes/
       agents.ts          # GET /api/agents, GET /api/agents/:id/memories
       features.ts         # GET/POST/PATCH /api/features
@@ -173,7 +189,8 @@ backend/
       roundtable.ts         # POST /api/roundtable/start (SSE), GET/POST /api/roundtable/:id
       diagrams.ts            # Proxies the standalone diagram-tool app
       outline.ts              # Outline wiki proxy
-      plane.ts                 # Plane issue tracker proxy
+      plane.ts                  # Plane issue tracker proxy
+      dataExport.ts               # POST /api/data-export/run, GET /api/data-export/status
     index.ts            # Express entry point
 ```
 
@@ -193,6 +210,8 @@ backend/
 | POST | `/api/roundtable/:id/terminate` | Manually terminate active roundtable |
 | GET | `/api/diagrams/list` | List diagrams (proxied from diagram-tool) |
 | GET | `/api/diagrams/:id/agent-format` | Get a diagram's machine-readable text (proxied from diagram-tool) |
+| POST | `/api/data-export/run` | Start a data snapshot (202 if started, 409 with current status if one's already running) |
+| GET | `/api/data-export/status` | Poll the current/last snapshot job status |
 
 ## Feature Lifecycle
 

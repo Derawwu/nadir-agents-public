@@ -20,6 +20,7 @@ import roundtableRouter from './routes/roundtable';
 import planeRouter from './routes/plane';
 import outlineRouter from './routes/outline';
 import diagramsRouter from './routes/diagrams';
+import dataExportRouter from './routes/dataExport';
 
 dotenv.config();
 
@@ -54,6 +55,7 @@ app.use('/api/roundtable', roundtableRouter);
 app.use('/api/plane', planeRouter);
 app.use('/api/outline', outlineRouter);
 app.use('/api/diagrams', diagramsRouter);
+app.use('/api/data-export', dataExportRouter);
 
 app.listen(PORT, () => {
   console.log(`Nadir agents backend running on http://localhost:${PORT}`);
