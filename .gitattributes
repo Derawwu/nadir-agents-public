@@ -1,0 +1,3 @@
+# Git hook scripts must keep LF line endings - a shebang line ending in \r
+# (from autocrlf converting to CRLF on checkout) breaks execution.
+scripts/hooks/* text eol=lf
