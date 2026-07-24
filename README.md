@@ -32,6 +32,12 @@ start.bat        Launches Plane, Outline, and the agent backend/frontend
 upstream git repository (vendored, not a subtree), and `backups/` is local
 output. See `.gitignore`.
 
+**Code vs. data**: this repo intentionally contains no application data
+(Outline wiki content, Plane issues, diagrams). Those are versioned in a
+separate sibling repo, `../nadir-agents-data`, so the code here can be shared
+without exposing that content. See that repo's README for what it captures
+and how to refresh it.
+
 ## Stack
 
 - **Backend**: Node.js 22+, TypeScript, Express, `node:sqlite` (built-in)
