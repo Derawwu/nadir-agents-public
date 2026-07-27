@@ -12,6 +12,7 @@ import { getAgentById } from '../agents/agentService';
 import { buildChatContext } from '../agents/promptBuilder';
 import { saveMemory, type MemoryType } from '../agents/memoryService';
 import { getModelForAgent, normalizeAgentRole } from '../agents/modelConfig';
+import type { StoredImage } from './imageStore';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -49,6 +50,7 @@ export interface SendMessageParams {
   agentId: number;
   featureId?: number | null;
   message: string;
+  images?: StoredImage[];
   conversationId?: number | null;
   onChunk: (chunk: string) => void;
 }
@@ -78,13 +80,15 @@ export async function sendMessage(params: SendMessageParams): Promise<SendMessag
     featureId: params.featureId,
     conversationId,
     userMessage: params.message,
+    userImages: params.images,
   });
 
   // Persist user message before the API call so it's recorded even if streaming fails.
-  db.prepare('INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)').run(
+  db.prepare('INSERT INTO messages (conversation_id, role, content, images) VALUES (?, ?, ?, ?)').run(
     conversationId,
     'user',
-    params.message
+    params.message,
+    params.images && params.images.length > 0 ? JSON.stringify(params.images) : null
   );
   const model = getModelForAgent(agentRole);
   console.log(`[${agentRole}] Using model: ${model}`);
@@ -127,12 +131,26 @@ interface MessageRow {
   id: number;
   role: 'user' | 'assistant';
   content: string;
+  images: string | null;
+  created_at: string;
+}
+
+export interface MessageImageRef {
+  url: string;
+  media_type: string;
+}
+
+export interface HistoryMessage {
+  id: number;
+  role: 'user' | 'assistant';
+  content: string;
+  images?: MessageImageRef[];
   created_at: string;
 }
 
 export interface ConversationHistoryResult {
   conversationId: number | null;
-  messages: MessageRow[];
+  messages: HistoryMessage[];
 }
 
 /**
@@ -155,13 +173,26 @@ export function getConversationHistory(
 
   if (!conv) return { conversationId: null, messages: [] };
 
-  const messages = db
+  const rows = db
     .prepare(
-      `SELECT id, role, content, created_at FROM messages
+      `SELECT id, role, content, images, created_at FROM messages
        WHERE conversation_id = ?
        ORDER BY created_at ASC`
     )
     .all(conv.id) as unknown as MessageRow[];
+
+  const messages: HistoryMessage[] = rows.map((row) => ({
+    id: row.id,
+    role: row.role,
+    content: row.content,
+    created_at: row.created_at,
+    images: row.images
+      ? (JSON.parse(row.images) as StoredImage[]).map((img) => ({
+          url: `/uploads/${img.filename}`,
+          media_type: img.media_type,
+        }))
+      : undefined,
+  }));
 
   return { conversationId: conv.id, messages };
 }

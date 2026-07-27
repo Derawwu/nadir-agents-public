@@ -17,7 +17,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: outline
-      POSTGRES_PASSWORD: outline_password
+      POSTGRES_PASSWORD: ${OUTLINE_PG_PASSWORD:?set OUTLINE_PG_PASSWORD in outline/.env}
       POSTGRES_DB: outline
     volumes:
       - outline-pgdata:/var/lib/postgresql/data

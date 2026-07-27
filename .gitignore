@@ -20,6 +20,9 @@ build/
 **/data/*.db-shm
 **/data/*.db-wal
 
+# User-uploaded files - runtime data, never committed.
+**/data/uploads/
+
 # Backups (rolling/pruned local disaster-recovery copies - not the permanent
 # ../nadir-agents-data snapshot repo)
 backups/

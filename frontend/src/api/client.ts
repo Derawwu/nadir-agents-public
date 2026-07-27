@@ -124,10 +124,16 @@ export async function syncPlane(): Promise<{ synced: number; skipped: number; ti
   return res.json() as Promise<{ synced: number; skipped: number; timestamp: string }>;
 }
 
+export interface MessageImageRef {
+  url: string;
+  media_type: string;
+}
+
 export interface StoredMessage {
   id: number;
   role: 'user' | 'assistant';
   content: string;
+  images?: MessageImageRef[];
   created_at: string;
 }
 
@@ -206,16 +212,34 @@ function postSSE<T>(url: string, body: unknown, onEvent: (event: T) => void): ()
   return () => controller.abort();
 }
 
+export interface PendingImage {
+  filename: string;
+  media_type: string;
+  url: string;
+}
+
 export function sendChatMessage(
   params: {
     agentId: number;
     featureId?: number | null;
     message: string;
+    images?: { filename: string; media_type: string }[];
     conversationId?: number | null;
   },
   onEvent: (event: ChatSSEEvent) => void
 ): () => void {
   return postSSE<ChatSSEEvent>(`${BASE}/chat/message`, params, onEvent);
+}
+
+/** Uploads a pasted image (as a data URL) and returns its stored filename + URL. */
+export async function uploadChatImage(dataUrl: string): Promise<PendingImage> {
+  const res = await fetch(`${BASE}/chat/upload-image`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dataUrl }),
+  });
+  if (!res.ok) throw new Error(`uploadChatImage failed: ${res.status}`);
+  return res.json() as Promise<PendingImage>;
 }
 
 export async function saveMemory(params: {
