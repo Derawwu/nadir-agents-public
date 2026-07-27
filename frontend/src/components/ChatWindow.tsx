@@ -2,14 +2,15 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { MessageBubble } from './MessageBubble';
 import { ContextTrayBar } from './ContextTrayBar';
 import { useContextTray } from '../contexts/ContextTrayContext';
-import { sendChatMessage, saveMemory } from '../api/client';
-import type { MemoryType, StoredMessage } from '../api/client';
+import { sendChatMessage, saveMemory, uploadChatImage } from '../api/client';
+import type { MemoryType, MessageImageRef, PendingImage, StoredMessage } from '../api/client';
 import { dayKey, formatDayLabel } from '../utils/dateFormat';
 
 interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  images?: MessageImageRef[];
   createdAt: string;
   isStreaming?: boolean;
   isInfo?: boolean;
@@ -41,12 +42,15 @@ export function ChatWindow({
       id: String(m.id),
       role: m.role,
       content: m.content,
+      images: m.images,
       createdAt: m.created_at,
     }))
   );
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
+  const [uploadingCount, setUploadingCount] = useState(0);
   const [isAtBottom, setIsAtBottom] = useState(true);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -124,11 +128,49 @@ export function ChatWindow({
     setSearchQuery('');
   }
 
+  async function handlePaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
+    const imageItems = Array.from(event.clipboardData.items).filter((item) =>
+      item.type.startsWith('image/')
+    );
+    if (imageItems.length === 0) return;
+    event.preventDefault();
+
+    setUploadingCount((n) => n + imageItems.length);
+    for (const item of imageItems) {
+      const file = item.getAsFile();
+      if (!file) {
+        setUploadingCount((n) => n - 1);
+        continue;
+      }
+      try {
+        const dataUrl = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result as string);
+          reader.onerror = reject;
+          reader.readAsDataURL(file);
+        });
+        const uploaded = await uploadChatImage(dataUrl);
+        setPendingImages((prev) => [...prev, uploaded]);
+      } catch (e: unknown) {
+        setError(e instanceof Error ? e.message : 'Failed to upload pasted image');
+      } finally {
+        setUploadingCount((n) => n - 1);
+      }
+    }
+  }
+
+  function removePendingImage(filename: string) {
+    setPendingImages((prev) => prev.filter((img) => img.filename !== filename));
+  }
+
   async function handleSend() {
-    if (!agentId || !input.trim() || sending) return;
+    if (!agentId || sending) return;
+    if (!input.trim() && pendingImages.length === 0) return;
 
     const userText = input.trim();
+    const imagesToSend = pendingImages;
     setInput('');
+    setPendingImages([]);
     setSending(true);
     setError(null);
 
@@ -140,7 +182,13 @@ export function ChatWindow({
     // Show user message immediately.
     setMessages((prev) => [
       ...prev,
-      { id: userMsgId, role: 'user', content: userText, createdAt: now() },
+      {
+        id: userMsgId,
+        role: 'user',
+        content: userText,
+        images: imagesToSend.map((img) => ({ url: img.url, media_type: img.media_type })),
+        createdAt: now(),
+      },
     ]);
 
     // Fetch any tray context (may be a no-op if tray is empty).
@@ -173,6 +221,7 @@ export function ChatWindow({
         agentId,
         featureId,
         message: messageToSend,
+        images: imagesToSend.map((img) => ({ filename: img.filename, media_type: img.media_type })),
         conversationId: resolvedConvId,
       },
       (event) => {
@@ -324,6 +373,7 @@ export function ChatWindow({
                   <MessageBubble
                     role={msg.role}
                     content={msg.content}
+                    images={msg.images}
                     createdAt={msg.createdAt}
                     agentName={msg.role === 'assistant' ? (agentName ?? undefined) : undefined}
                     isStreaming={msg.isStreaming}
@@ -364,12 +414,37 @@ export function ChatWindow({
 
       {/* Input area */}
       <div className="border-t border-border px-6 py-4">
+        {(pendingImages.length > 0 || uploadingCount > 0) && (
+          <div className="flex items-center gap-2 mb-2 flex-wrap">
+            {pendingImages.map((img) => (
+              <div key={img.filename} className="relative">
+                <img
+                  src={img.url}
+                  alt="Pasted attachment"
+                  className="h-14 w-14 object-cover rounded border border-border"
+                />
+                <button
+                  onClick={() => removePendingImage(img.filename)}
+                  className="absolute -top-1.5 -right-1.5 bg-surface-200 border border-border rounded-full
+                             w-4 h-4 text-[10px] text-gray-400 hover:text-red-400 leading-none"
+                  aria-label="Remove image"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+            {uploadingCount > 0 && (
+              <span className="text-xs text-gray-500">Uploading {uploadingCount}…</span>
+            )}
+          </div>
+        )}
         <div className="flex gap-3">
           <textarea
             className="input resize-y h-20 min-h-[3rem] max-h-[60vh] text-sm"
-            placeholder={`Message ${agentName ?? 'agent'}…`}
+            placeholder={`Message ${agentName ?? 'agent'}… (paste an image to attach it)`}
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            onPaste={handlePaste}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
@@ -381,12 +456,12 @@ export function ChatWindow({
           <button
             className="btn-primary px-5 self-end"
             onClick={() => void handleSend()}
-            disabled={sending || !input.trim()}
+            disabled={sending || (!input.trim() && pendingImages.length === 0)}
           >
             {sending ? '...' : 'Send'}
           </button>
         </div>
-        <p className="text-xs text-gray-600 mt-1.5">Enter to send · Shift+Enter for newline · drag bottom-right corner to resize</p>
+        <p className="text-xs text-gray-600 mt-1.5">Enter to send · Shift+Enter for newline · paste an image to attach · drag bottom-right corner to resize</p>
       </div>
     </div>
   );

@@ -12,10 +12,11 @@
  * and context before the immediate request.
  */
 
-import type { MessageParam, TextBlockParam } from '@anthropic-ai/sdk/resources/messages';
+import type { ContentBlockParam, MessageParam, TextBlockParam } from '@anthropic-ai/sdk/resources/messages';
 import { getFeatureById, type Feature } from '../features/featureService';
 import { getMemoriesForAgent, formatMemoriesForPrompt } from './memoryService';
 import { searchDocuments, type AgentRole } from '../outline/outlineService';
+import { readImageAsBase64, type StoredImage } from '../chat/imageStore';
 import db from '../db/connection';
 
 export interface SystemPromptParts {
@@ -28,6 +29,31 @@ export interface SystemPromptParts {
 interface MessageRow {
   role: 'user' | 'assistant';
   content: string;
+  images: string | null;
+}
+
+/**
+ * Builds Anthropic content blocks for a message, inlining any attached images
+ * as base64 (read from disk at call time — only the filename is stored in the DB).
+ * Falls back to a plain string when there are no images, matching prior behavior.
+ */
+function buildContent(text: string, images?: StoredImage[]): string | ContentBlockParam[] {
+  if (!images || images.length === 0) return text;
+
+  const blocks: ContentBlockParam[] = images.map((img) => ({
+    type: 'image',
+    source: {
+      type: 'base64',
+      media_type: img.media_type as 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp',
+      data: readImageAsBase64(img.filename),
+    },
+  }));
+
+  if (text.trim()) {
+    blocks.push({ type: 'text', text });
+  }
+
+  return blocks;
 }
 
 export async function getRelevantWikiDocs(
@@ -173,11 +199,12 @@ export function buildCachedSystemParam(parts: SystemPromptParts): TextBlockParam
  */
 export function buildMessages(
   conversationId: number,
-  currentUserMessage: string
+  currentUserMessage: string,
+  currentImages?: StoredImage[]
 ): MessageParam[] {
   const history = db
     .prepare(
-      `SELECT role, content FROM messages
+      `SELECT role, content, images FROM messages
        WHERE conversation_id = ?
        ORDER BY created_at ASC`
     )
@@ -185,10 +212,10 @@ export function buildMessages(
 
   const messages: MessageParam[] = history.map((row) => ({
     role: row.role,
-    content: row.content,
+    content: buildContent(row.content, row.images ? (JSON.parse(row.images) as StoredImage[]) : undefined),
   }));
 
-  messages.push({ role: 'user', content: currentUserMessage });
+  messages.push({ role: 'user', content: buildContent(currentUserMessage, currentImages) });
   return messages;
 }
 
@@ -203,6 +230,7 @@ export async function buildChatContext(params: {
   featureId?: number | null;
   conversationId: number;
   userMessage: string;
+  userImages?: StoredImage[];
 }): Promise<{ system: TextBlockParam[]; messages: MessageParam[] }> {
   const feature = params.featureId ? (getFeatureById(params.featureId) ?? null) : null;
   const memories = getMemoriesForAgent(params.agentId, params.featureId);
@@ -210,7 +238,7 @@ export async function buildChatContext(params: {
 
   const parts = await buildSystemBlocks(params.agentSystemPrompt, feature, memoriesBlock, params.agentRole);
   const system = buildCachedSystemParam(parts);
-  const messages = buildMessages(params.conversationId, params.userMessage);
+  const messages = buildMessages(params.conversationId, params.userMessage, params.userImages);
 
   return { system, messages };
 }

@@ -21,6 +21,7 @@ import planeRouter from './routes/plane';
 import outlineRouter from './routes/outline';
 import diagramsRouter from './routes/diagrams';
 import dataExportRouter from './routes/dataExport';
+import { getUploadsDir } from './chat/imageStore';
 
 dotenv.config();
 
@@ -41,7 +42,8 @@ app.use(
   })
 );
 
-app.use(express.json());
+// Higher limit accommodates base64-encoded pasted images.
+app.use(express.json({ limit: '15mb' }));
 
 // Health check — useful for docker/CI readiness probes.
 app.get('/health', (_req, res) => {
@@ -56,6 +58,7 @@ app.use('/api/plane', planeRouter);
 app.use('/api/outline', outlineRouter);
 app.use('/api/diagrams', diagramsRouter);
 app.use('/api/data-export', dataExportRouter);
+app.use('/uploads', express.static(getUploadsDir()));
 
 app.listen(PORT, () => {
   console.log(`Nadir agents backend running on http://localhost:${PORT}`);

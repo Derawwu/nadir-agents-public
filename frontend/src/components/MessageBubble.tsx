@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import type { MemoryType } from '../api/client';
+import type { MemoryType, MessageImageRef } from '../api/client';
 import { formatMessageTime } from '../utils/dateFormat';
 import { CopyButton } from './CopyButton';
 
@@ -8,6 +8,7 @@ const MEMORY_TYPES: MemoryType[] = ['decision', 'lore', 'technical', 'visual', '
 interface Props {
   role: 'user' | 'assistant';
   content: string;
+  images?: MessageImageRef[];
   createdAt: string;
   agentName?: string;
   /** When provided, a "Save as memory" button is shown for assistant messages. */
@@ -35,6 +36,7 @@ function renderHighlighted(content: string, highlight?: string) {
 export function MessageBubble({
   role,
   content,
+  images,
   createdAt,
   agentName,
   onSaveMemory,
@@ -73,6 +75,19 @@ export function MessageBubble({
               : 'bg-surface-200 text-gray-200 border border-border'
             }`}
         >
+          {images && images.length > 0 && (
+            <div className={`flex flex-wrap gap-2 ${content ? 'mb-2' : ''}`}>
+              {images.map((img, i) => (
+                <a key={i} href={img.url} target="_blank" rel="noreferrer">
+                  <img
+                    src={img.url}
+                    alt="Attached image"
+                    className="max-h-48 rounded border border-border/60"
+                  />
+                </a>
+              ))}
+            </div>
+          )}
           {renderHighlighted(content, highlight)}
           {isStreaming && (
             <span className="inline-block w-1.5 h-4 ml-1 bg-accent animate-pulse align-middle" />

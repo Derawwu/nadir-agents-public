@@ -104,4 +104,14 @@ export function runMigrations(): void {
   db.exec(
     'CREATE UNIQUE INDEX IF NOT EXISTS idx_features_jira_key ON features(jira_key)'
   );
+
+  // ── Migration: pasted-image attachments on messages ──────────────────────
+  // Stores a JSON array of { filename, media_type } — the actual image bytes
+  // live on disk under data/uploads/, keeping the DB itself lightweight.
+  const messagesCols = new Set(
+    (db.prepare('PRAGMA table_info(messages)').all() as unknown as ColRow[]).map((r) => r.name)
+  );
+  if (!messagesCols.has('images')) {
+    db.exec('ALTER TABLE messages ADD COLUMN images TEXT');
+  }
 }

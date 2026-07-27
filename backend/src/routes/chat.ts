@@ -10,9 +10,27 @@
 
 import { Router, type Request, type Response } from 'express';
 import { sendMessage, saveConversationMemory, getConversationHistory } from '../chat/chatService';
+import { saveImageFromDataUrl } from '../chat/imageStore';
 import type { MemoryType } from '../agents/memoryService';
 
 const router = Router();
+
+// POST /api/chat/upload-image
+// Body: { dataUrl: string } — a `data:image/...;base64,...` URL from a clipboard paste.
+router.post('/upload-image', (req: Request, res: Response) => {
+  const { dataUrl } = req.body as { dataUrl?: unknown };
+  if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:image/')) {
+    res.status(400).json({ error: 'dataUrl must be an image data URL' });
+    return;
+  }
+
+  try {
+    const image = saveImageFromDataUrl(dataUrl);
+    res.json({ filename: image.filename, media_type: image.media_type, url: `/uploads/${image.filename}` });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : 'Failed to save image' });
+  }
+});
 
 router.get('/conversation', (req: Request, res: Response) => {
   const rawAgentId = req.query.agentId;
@@ -37,15 +55,16 @@ router.get('/conversation', (req: Request, res: Response) => {
 });
 
 router.post('/message', async (req: Request, res: Response) => {
-  const { agentId, featureId, message, conversationId } = req.body as {
+  const { agentId, featureId, message, images, conversationId } = req.body as {
     agentId?: number;
     featureId?: number | null;
     message?: string;
+    images?: { filename: string; media_type: string }[];
     conversationId?: number | null;
   };
 
-  if (!agentId || !message) {
-    res.status(400).json({ error: 'agentId and message are required' });
+  if (!agentId || (!message && (!images || images.length === 0))) {
+    res.status(400).json({ error: 'agentId and (message or images) are required' });
     return;
   }
 
@@ -60,7 +79,8 @@ router.post('/message', async (req: Request, res: Response) => {
     const result = await sendMessage({
       agentId,
       featureId: featureId ?? null,
-      message,
+      message: message ?? '',
+      images,
       conversationId: conversationId ?? null,
       onChunk: (chunk) => {
         res.write(`data: ${JSON.stringify({ type: 'chunk', text: chunk })}\n\n`);
