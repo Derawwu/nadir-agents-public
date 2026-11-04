@@ -6,6 +6,7 @@ import { PlaneTab } from './components/PlaneTab';
 import { DiagramsTab } from './components/DiagramsTab';
 import { UsagePage } from './pages/UsagePage';
 import { ExportDataButton } from './components/ExportDataButton';
+import { ModelUpdateBanner } from './components/ModelUpdateBanner';
 import { ContextTrayProvider } from './contexts/ContextTrayContext';
 
 export default function App() {
@@ -89,6 +90,8 @@ export default function App() {
               <ExportDataButton />
             </div>
           </nav>
+
+          <ModelUpdateBanner />
 
           {/* Page content */}
           <div className="flex-1 min-h-0">

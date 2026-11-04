@@ -683,3 +683,30 @@ export async function fetchChatUsage(chatId: number): Promise<ChatUsage> {
   if (!res.ok) throw new Error(`Failed to fetch chat usage: ${res.status}`);
   return res.json() as Promise<ChatUsage>;
 }
+
+// ─── Model status ────────────────────────────────────────────────────────────
+
+export type ModelIssue = 'upgrade' | 'deprecated' | 'unknown';
+
+export interface ModelCheck {
+  label: string;
+  envVar: string;
+  model: string;
+  displayName: string | null;
+  issues: ModelIssue[];
+  latest: { id: string; displayName: string } | null;
+  deprecatedAt: string | null;
+  retiresAt: string | null;
+}
+
+export interface ModelStatus {
+  checkedAt: string;
+  upToDate: boolean;
+  models: ModelCheck[];
+}
+
+export async function fetchModelStatus(): Promise<ModelStatus> {
+  const res = await fetch(`${BASE}/models/status`);
+  if (!res.ok) throw new Error(`Failed to check models: ${res.status}`);
+  return res.json() as Promise<ModelStatus>;
+}
