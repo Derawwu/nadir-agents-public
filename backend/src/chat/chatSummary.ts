@@ -24,6 +24,7 @@ import {
   IMAGE_TOKEN_ESTIMATE,
 } from '../agents/contextConfig';
 import { recordCall } from '../llm/usageLog';
+import { modelExtras } from '../llm/modelParams';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -77,7 +78,8 @@ Rules: keep exact names, terms and identifiers. Drop small talk and anything lat
   const startedAt = Date.now();
   const response = await anthropic.messages.create({
     model,
-    max_tokens: 4096,
+    max_tokens: 8000,
+    ...(modelExtras(model, 'low').body as object),
     messages: [{ role: 'user', content: prompt }],
   });
   recordCall({ kind: 'chat_summary', agentId: meta.agentId, conversationId: meta.conversationId }, response, { startedAt });

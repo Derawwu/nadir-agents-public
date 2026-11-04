@@ -29,14 +29,14 @@ import { buildRoundtableContext } from '../agents/promptBuilder';
 import { saveMemory } from '../agents/memoryService';
 import { getFeatureById } from '../features/featureService';
 import { saveRoundtableSummary } from '../outline/outlineService';
-import { getModelForAgent, normalizeAgentRole } from '../agents/modelConfig';
+import { getEffortForAgent, getModelForAgent, normalizeAgentRole, ROUNDTABLE_SUMMARY_MODEL } from '../agents/modelConfig';
+import { modelExtras, refusalNotice, textOf, type Effort } from '../llm/modelParams';
 import { recordCall, type CallMeta } from '../llm/usageLog';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
 });
 
-const SUMMARIZER_MODEL = 'claude-sonnet-4-6';
 
 // Canonical agent order for roundtable discussions.
 const AGENT_ORDER = ['Narrator', 'Architect', 'UX/UI', 'Analyst'] as const;
@@ -104,6 +104,7 @@ async function streamAgentTurn(
   system: Anthropic.TextBlockParam[],
   messages: Anthropic.MessageParam[],
   model: string,
+  effort: Effort,
   meta: CallMeta,
   onChunk: (chunk: string) => void
 ): Promise<string> {
@@ -111,12 +112,17 @@ async function streamAgentTurn(
   const startedAt = Date.now();
   let firstTokenAt: number | null = null;
 
-  const stream = anthropic.messages.stream({
-    model,
-    max_tokens: 4096,
-    system,
-    messages,
-  });
+  const extras = modelExtras(model, effort);
+  const stream = anthropic.messages.stream(
+    {
+      model,
+      max_tokens: 16000,
+      system,
+      messages,
+      ...extras.body,
+    } as Anthropic.MessageStreamParams,
+    { headers: extras.headers }
+  );
 
   for await (const event of stream) {
     if (
@@ -134,6 +140,12 @@ async function streamAgentTurn(
   recordCall(meta, finalMessage, { startedAt, firstTokenAt });
   if (finalMessage.stop_reason === 'max_tokens') {
     console.warn(`[Roundtable] Response truncated by max_tokens limit (model: ${model})`);
+  }
+  if ((finalMessage.stop_reason as string) === 'refusal') {
+    const notice = refusalNotice(finalMessage);
+    const sep = full ? '\n\n' : '';
+    full += sep + notice;
+    onChunk(sep + notice);
   }
 
   return full;
@@ -190,16 +202,19 @@ Produce a structured summary in this exact JSON format (no markdown wrapper):
 Be precise. Empty arrays are valid if no items apply. Do not invent items not present in the transcript.`;
 
   const startedAt = Date.now();
+  const summaryExtras = modelExtras(ROUNDTABLE_SUMMARY_MODEL, 'medium');
   const response = await anthropic.messages.create({
-    model: SUMMARIZER_MODEL,
-    max_tokens: 1024,
+    model: ROUNDTABLE_SUMMARY_MODEL,
+    max_tokens: 8000,
+    ...(summaryExtras.body as object),
     messages: [{ role: 'user', content: prompt }],
-  });
+  }, { headers: summaryExtras.headers });
 
   recordCall({ kind: 'roundtable_summary', roundtableId }, response, { startedAt });
 
-  const rawText =
-    response.content[0].type === 'text' ? response.content[0].text : '{}';
+  // Tolerate a fenced reply: take the outermost JSON object.
+  const text = textOf(response);
+  const rawText = text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1) || '{}';
 
   let summary: RoundtableSummary;
   try {
@@ -300,7 +315,7 @@ async function runDiscussionSession(params: {
       const model = getModelForAgent(agentRole);
       console.log(`[${agentRole}] Using model: ${model}`);
 
-      const agentResponse = await streamAgentTurn(system, messages, model, { kind: 'roundtable_turn', agentId: agent.id, roundtableId }, (chunk) => {
+      const agentResponse = await streamAgentTurn(system, messages, model, getEffortForAgent(agentRole), { kind: 'roundtable_turn', agentId: agent.id, roundtableId }, (chunk) => {
         onEvent(
           `data: ${JSON.stringify({ type: 'chunk', agentId: agent.id, agentName: agent.name, round: currentRound, chunk })}\n\n`
         );
