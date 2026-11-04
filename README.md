@@ -192,7 +192,8 @@ backend/
     db/
       connection.ts     # node:sqlite singleton (WAL mode, FK enforcement)
       schema.ts         # Idempotent migrations (IF NOT EXISTS)
-      seed.ts           # Agent seeding (skips if already present)
+      seed.example.ts   # Generic agent prompts + seeding (skips if already present);
+                        # copy to seed.ts (gitignored) for your own prompts
     agents/
       agentService.ts   # Agent CRUD (read-only at runtime)
       memoryService.ts  # Memory read/write/inject

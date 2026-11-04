@@ -12,7 +12,8 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { runMigrations } from './db/schema';
-import { seedAgents } from './db/seed';
+import fs from 'fs';
+import path from 'path';
 import agentsRouter from './routes/agents';
 import featuresRouter from './routes/features';
 import chatRouter from './routes/chat';
@@ -29,6 +30,12 @@ const PORT = parseInt(process.env.PORT ?? '3001', 10);
 
 // Initialize database before anything else.
 runMigrations();
+
+// Agent prompts: a private, gitignored db/seed.ts wins when present;
+// otherwise the generic db/seed.example.ts is used.
+const hasPrivateSeed = ['seed.ts', 'seed.js'].some((f) => fs.existsSync(path.join(__dirname, 'db', f)));
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const { seedAgents } = require(hasPrivateSeed ? './db/seed' : './db/seed.example') as typeof import('./db/seed.example');
 seedAgents();
 
 const app = express();

@@ -34,3 +34,7 @@ backups/
 .DS_Store
 Thumbs.db
 *.log
+
+# Private agent prompts (game-specific). Copy backend/src/db/seed.example.ts
+# to seed.ts to customise; startup falls back to the example when absent.
+/backend/src/db/seed.ts
