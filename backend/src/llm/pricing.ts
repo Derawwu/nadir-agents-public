@@ -5,17 +5,22 @@
  * editing a price here never rewrites history. Unknown models log with a
  * null cost instead of a guess.
  *
- * Cache multipliers (relative to the input price) are the same on every
- * current model: 5-minute writes 1.25x, 1-hour writes 2x, reads 0.1x.
+ * Cache multipliers relative to the input price: 5-minute writes 1.25x,
+ * 1-hour writes 2x, reads 0.1x — except where a model sets its own cache-read
+ * price. Haiku 5.5 bills prompts over 100K tokens on a second, higher card.
  */
 
 export interface ModelPrice {
   input: number;
   output: number;
+  /** Cache-read price when it isn't 0.1x input. */
+  cacheRead?: number;
+  /** Rate card for prompts above longContext.threshold input tokens. */
+  longContext?: { threshold: number; input: number; output: number };
 }
 
 const PRICES: Record<string, ModelPrice> = {
-  'claude-opus-5-5': { input: 4, output: 20 },
+  'claude-opus-5-5': { input: 4, output: 20, cacheRead: 0.2 },
   'claude-opus-5': { input: 5, output: 25 },
   'claude-opus-4-8': { input: 5, output: 25 },
   'claude-opus-4-7': { input: 5, output: 25 },
@@ -23,7 +28,7 @@ const PRICES: Record<string, ModelPrice> = {
   'claude-sonnet-5-5': { input: 2, output: 10 },
   'claude-sonnet-5': { input: 2, output: 10 },
   'claude-sonnet-4-6': { input: 3, output: 15 },
-  'claude-haiku-5-5': { input: 0.1, output: 0.5 },
+  'claude-haiku-5-5': { input: 0.1, output: 0.5, longContext: { threshold: 100_000, input: 0.5, output: 2.5 } },
   'claude-haiku-4-5': { input: 1, output: 5 },
 };
 
@@ -50,12 +55,16 @@ export interface TokenUsage {
 
 /** Returns the call's cost in USD, or null when the model has no price entry. */
 export function computeCost(model: string, u: TokenUsage): number | null {
-  const price = getPrice(model);
-  if (!price) return null;
-  const inputUnits =
-    u.inputTokens +
-    u.cacheReadTokens * CACHE_READ +
-    u.cacheWrite5mTokens * CACHE_WRITE_5M +
-    u.cacheWrite1hTokens * CACHE_WRITE_1H;
-  return (inputUnits * price.input + u.outputTokens * price.output) / 1_000_000;
+  const base = getPrice(model);
+  if (!base) return null;
+  const promptTokens = u.inputTokens + u.cacheReadTokens + u.cacheWrite5mTokens + u.cacheWrite1hTokens;
+  const card = base.longContext && promptTokens > base.longContext.threshold ? base.longContext : base;
+  const readRate = base.cacheRead != null && card === base ? base.cacheRead : card.input * CACHE_READ;
+  const dollars =
+    u.inputTokens * card.input +
+    u.cacheReadTokens * readRate +
+    u.cacheWrite5mTokens * card.input * CACHE_WRITE_5M +
+    u.cacheWrite1hTokens * card.input * CACHE_WRITE_1H +
+    u.outputTokens * card.output;
+  return dollars / 1_000_000;
 }

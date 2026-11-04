@@ -34,7 +34,17 @@ import {
   getHistoryRows,
 } from '../src/agents/promptBuilder';
 import { maybeUpdateSummary } from '../src/chat/chatSummary';
-import { getPrice, normalizeModelId } from '../src/llm/pricing';
+import { computeCost, getPrice, normalizeModelId } from '../src/llm/pricing';
+
+function cost(model: string, u: { input?: number; read?: number; write?: number }): number {
+  return computeCost(model, {
+    inputTokens: Math.round(u.input ?? 0),
+    cacheReadTokens: Math.round(u.read ?? 0),
+    cacheWrite5mTokens: Math.round(u.write ?? 0),
+    cacheWrite1hTokens: 0,
+    outputTokens: 0,
+  }) ?? 0;
+}
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 const PROBE = 'Benchmark probe: what should we tackle next?';
@@ -109,7 +119,7 @@ async function main() {
     // legacy: everything billed at the full input price.
     const legacy = await legacyRequest(conv, agent.system_prompt, role);
     const legacyTokens = await count(model, legacy.system, legacy.messages);
-    const legacyCost = (legacyTokens * price.input) / 1e6;
+    const legacyCost = cost(model, { input: legacyTokens });
 
     // new layouts: warm cache reads the prefix up to the previous exchange,
     // writes the last exchange, and pays full price for the new turn.
@@ -124,8 +134,8 @@ async function main() {
       const write = lastExchange * perChar;
       const fresh = newTurn * perChar;
       const read = Math.max(tokens - write - fresh, 0);
-      const warm = ((read * 0.1 + write * 1.25 + fresh) * price.input) / 1e6;
-      const cold = ((tokens - fresh) * 1.25 * price.input + fresh * price.input) / 1e6;
+      const warm = cost(model, { read, write, input: fresh });
+      const cold = cost(model, { write: tokens - fresh, input: fresh });
       return { tokens, warm, cold, verbatim: req.verbatimCount, summarized: req.summarized };
     };
     const full = await measure('full');

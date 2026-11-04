@@ -42,7 +42,7 @@ and how to refresh it.
 
 - **Backend**: Node.js 22+, TypeScript, Express, `node:sqlite` (built-in)
 - **Frontend**: React 18, Vite, Tailwind CSS
-- **AI**: Anthropic SDK (`claude-sonnet-4-6`)
+- **AI**: Anthropic SDK: Sonnet 5.5, Opus 5.5 and Haiku 5.5, picked per agent (see [Models](#models))
 
 > **Note**: Uses Node's built-in `node:sqlite` module (requires Node 22.5+). No native compilation needed — this machine has no VS Build Tools, so avoid adding any dependency that needs native compilation (e.g. `better-sqlite3`).
 
@@ -285,7 +285,7 @@ Chat requests are now built in three layers:
    the input price.
 2. **Windowed history.** Only roughly the last `HISTORY_TOKEN_BUDGET` tokens
    (20k) are sent verbatim. Older turns are folded into a running summary
-   (decisions, facts and lore, user preferences, open questions) by Haiku, in
+   (decisions, facts and lore, user preferences, open questions) by Haiku 5.5, in
    the background after a reply.
 3. **Batched summary updates.** The summary is only rewritten once another
    `SUMMARY_BATCH_TOKENS` (10k) of history has piled up. Every rewrite changes
@@ -301,15 +301,20 @@ every layout:
 |---|---|---|---|---|---|
 | Narrator (Sonnet 4.6) | 100 | 75,987 tokens / $0.228 | 76,016 / $0.033 | 19,986 / $0.016 | 93% |
 | Architect (Opus 4.8) | 56 | 68,953 tokens / $0.345 | 69,216 / $0.041 | 31,762 / $0.024 | 93% |
+| Narrator (Sonnet 5.5) | 100 | 108,252 tokens / $0.217 | 108,290 / $0.031 | 29,125 / $0.015 | 93% |
+| Architect (Opus 5.5) | 56 | 68,955 tokens / $0.276 | 69,218 / $0.020 | 31,764 / $0.013 | 95% |
+
+The same chat counts about 40% more tokens on Sonnet 5.5 because of its newer
+tokenizer, but the lower price more than makes up for it.
 
 A live check on the Narrator chat confirmed it: the second identical request
-read 18,450 tokens from cache and paid full price for 1,531.
+read 27,041 tokens from cache and paid full price for 2,076.
 
 **Trade-offs**
 - **Cache lifetime.** The cache expires 5 minutes after last use. When you
   reply after a longer pause, the prefix is written again at 1.25× the input
   price. With windowing that "cold" message still costs about a third of what
-  it did before ($0.074 vs $0.228 on the Narrator chat). `CACHE_TTL=1h` keeps
+  it did before ($0.072 vs $0.217 on the Narrator chat). `CACHE_TTL=1h` keeps
   the cache longer, but writes cost 2×. The Usage tab's cache hit rate shows
   which suits how you work.
 - **Summaries lose detail.** Exact wording older than the window is gone.
@@ -322,6 +327,28 @@ read 18,450 tokens from cache and paid full price for 1,531.
   with the new caching), and every logged call records which strategy it used.
 
 Re-run the benchmark from `backend/` with `npx tsx scripts/bench-context.ts`.
+
+### Models
+
+Each agent's model is set in `backend/.env`, and so is how hard it thinks:
+
+| Role | Default model | Price in / out per MTok | Why |
+|---|---|---|---|
+| Narrator | Sonnet 5.5 | $2 / $10 | Long creative threads; good writing at mid price |
+| Architect | Opus 5.5 | $4 / $20 | Hardest technical reasoning |
+| UX/UI, Analyst | Haiku 5.5 | $0.10 / $0.50 | Short reviews and checklists |
+| Titles, chat summaries | Haiku 5.5 | $0.10 / $0.50 | Cheap background jobs |
+| Roundtable summary | Sonnet 5.5 | $2 / $10 | Merges several agents' views into decisions |
+
+- **Effort, not temperature.** 5.5 models think adaptively. `ANTHROPIC_EFFORT_<ROLE>`
+  (`low` to `max`, default `medium`) sets how much, which is the main lever on
+  cost and latency per reply. Titles and summaries run at `low`.
+- **Refusals don't break a chat.** Opus 5.5 and Sonnet 5.5 requests set
+  server-side `fallbacks`, so a request their classifiers decline is retried on
+  another model inside the same call. If a reply is still declined, the chat
+  shows a notice with the category instead of an empty message.
+- Pricing, including Haiku 5.5's higher rate above 100k prompt tokens and Opus
+  5.5's cheaper cache reads, lives in `backend/src/llm/pricing.ts`.
 Add `--summarize` to build missing summaries first, which calls the summary
 model.
 

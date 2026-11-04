@@ -9,7 +9,7 @@
  *                       updated (default 10000). Batching keeps the cached
  *                       prefix stable for many turns between updates.
  * CACHE_TTL             5m (default) | 1h
- * ANTHROPIC_MODEL_SUMMARY  model that writes chat summaries (default claude-haiku-4-5)
+ * ANTHROPIC_MODEL_SUMMARY  model that writes chat summaries (default claude-haiku-5-5)
  */
 
 export type ContextStrategy = 'windowed' | 'full';
@@ -36,7 +36,7 @@ export function getCacheTtl(): '5m' | '1h' {
 }
 
 export function getSummaryModel(): string {
-  return process.env.ANTHROPIC_MODEL_SUMMARY ?? 'claude-haiku-4-5';
+  return process.env.ANTHROPIC_MODEL_SUMMARY ?? 'claude-haiku-5-5';
 }
 
 /** Rough token estimate (~4 characters per token). Only used for budgeting. */

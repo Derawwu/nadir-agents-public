@@ -12,7 +12,8 @@ import db from '../db/connection';
 import { getAgentById } from '../agents/agentService';
 import { buildChatContext } from '../agents/promptBuilder';
 import { saveMemory, type MemoryType } from '../agents/memoryService';
-import { getModelForAgent, normalizeAgentRole } from '../agents/modelConfig';
+import { getEffortForAgent, getModelForAgent, normalizeAgentRole, TITLE_MODEL } from '../agents/modelConfig';
+import { modelExtras, refusalNotice, textOf } from '../llm/modelParams';
 import type { StoredImage } from './imageStore';
 import { slugifyTitle } from './slug';
 import { maybeUpdateSummary } from './chatSummary';
@@ -24,7 +25,6 @@ const anthropic = new Anthropic({
 
 export const DEFAULT_CHAT_TITLE = 'New chat';
 
-const TITLE_MODEL = process.env.ANTHROPIC_MODEL_TITLE ?? 'claude-haiku-4-5';
 
 // ─── Chats ───────────────────────────────────────────────────────────────────
 
@@ -240,18 +240,25 @@ export async function sendMessage(params: SendMessageParams): Promise<SendMessag
   touchChat(conversationId);
 
   const model = getModelForAgent(agentRole);
-  console.log(`[${agentRole}] Using model: ${model}`);
+  const effort = getEffortForAgent(agentRole);
+  const extras = modelExtras(model, effort);
+  console.log(`[${agentRole}] Using model: ${model} (effort ${effort})`);
 
   let fullResponse = '';
   const startedAt = Date.now();
   let firstTokenAt: number | null = null;
 
-  const stream = anthropic.messages.stream({
-    model,
-    max_tokens: 8192,
-    system,
-    messages,
-  });
+  // max_tokens covers adaptive thinking as well as the visible reply.
+  const stream = anthropic.messages.stream(
+    {
+      model,
+      max_tokens: 32000,
+      system,
+      messages,
+      ...extras.body,
+    } as Anthropic.MessageStreamParams,
+    { headers: extras.headers }
+  );
 
   for await (const event of stream) {
     if (
@@ -273,6 +280,15 @@ export async function sendMessage(params: SendMessageParams): Promise<SendMessag
   );
   if (finalMessage.stop_reason === 'max_tokens') {
     console.warn(`[Chat] Response truncated by max_tokens limit (model: ${model})`);
+  }
+  // A safety-classifier decline arrives as a normal response with
+  // stop_reason "refusal" (after any server-side fallback also declined).
+  if ((finalMessage.stop_reason as string) === 'refusal') {
+    const notice = refusalNotice(finalMessage);
+    console.warn(`[Chat] Model declined (model: ${model})`);
+    const sep = fullResponse ? '\n\n' : '';
+    fullResponse += sep + notice;
+    params.onChunk(sep + notice);
   }
 
   // Persist complete assistant response after streaming finishes.
@@ -314,7 +330,9 @@ export async function generateChatTitle(
     const startedAt = Date.now();
     const response = await anthropic.messages.create({
       model: TITLE_MODEL,
-      max_tokens: 30,
+      // Room for brief adaptive thinking on 5.x models before the title.
+      max_tokens: 1024,
+      ...(modelExtras(TITLE_MODEL, 'low').body as object),
       messages: [
         {
           role: 'user',
@@ -326,9 +344,7 @@ export async function generateChatTitle(
       ],
     });
     recordCall({ kind: 'title', agentId: chat.agent_id, conversationId: chatId }, response, { startedAt });
-    const block = response.content[0];
-    const generated =
-      block?.type === 'text' ? block.text.trim().replace(/^["'\s]+|["'.\s]+$/g, '') : '';
+    const generated = textOf(response).trim().replace(/^["'\s]+|["'.\s]+$/g, '');
     if (generated) title = generated.slice(0, 80);
   } catch (err) {
     console.warn('[Chat] Title generation failed, using fallback:', err instanceof Error ? err.message : err);
