@@ -69,6 +69,9 @@ network — the two stacks are fully isolated.
 
 ## Secrets
 
-`SECRET_KEY` and `UTILS_SECRET` in `.env` were generated with
+Start from `.env.example` (`cp .env.example .env`). Generate `SECRET_KEY` and
+`UTILS_SECRET` with
 `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`.
+`OUTLINE_PG_PASSWORD` must match the password inside `DATABASE_URL`; Postgres
+only reads it when the database volume is first created.
 Do not share `.env` publicly.
