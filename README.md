@@ -152,6 +152,14 @@ Frontend starts at `http://localhost:5173`.
 - The **Open editor** link launches the diagram-tool's own canvas UI (`http://localhost:5180`) to create/edit diagrams
 - See `diagram-tool/README.md` for details on the standalone tool itself
 
+### Usage Tab (`/usage`)
+
+- Every Claude API call is logged (chat replies, roundtable turns and summaries, chat titles, chat summaries) with tokens, cache reads and writes, latency, stop reason and cost
+- Headline numbers: total cost vs the previous period, average cost per chat reply, cache hit rate, tokens in/out
+- Cost per day stacked by agent, with a marker for the day windowed history was switched on
+- Cost by model, and the most expensive chats and roundtables (click a chat to open it)
+- Each chat header shows a small badge: total cost, plus size and cache hit rate of the last request
+
 ### Export data (top-right nav button)
 
 Triggers a one-off snapshot of Outline + Plane + diagrams data into the
@@ -197,13 +205,19 @@ backend/
     agents/
       agentService.ts   # Agent CRUD (read-only at runtime)
       memoryService.ts  # Memory read/write/inject
-      promptBuilder.ts  # Context assembly: system prompt + feature brief + memories + history
+      promptBuilder.ts  # Context assembly: cache-friendly order, windowed history
+      contextConfig.ts  # Context strategy, history budget, cache TTL settings
       modelConfig.ts    # Model selection config
     features/
       featureService.ts # Feature CRUD
     chat/
       chatService.ts    # Single-agent streaming sessions
       roundtableService.ts # Multi-agent orchestration with conflict detection
+      chatSummary.ts    # Running chat summary that replaces older history
+    llm/
+      pricing.ts        # Per-model prices; cost computed when a call is logged
+      usageLog.ts       # Writes every Claude call to llm_calls
+      usageService.ts   # Queries for the Usage tab and chat badge
     diagrams/
       diagramClient.ts  # Thin proxy client to the standalone diagram-tool backend
     outline/
@@ -221,6 +235,7 @@ backend/
       outline.ts              # Outline wiki proxy
       plane.ts                  # Plane issue tracker proxy
       dataExport.ts               # POST /api/data-export/run, GET /api/data-export/status
+      usage.ts                    # GET /api/usage/summary, GET /api/usage/chats/:id
     index.ts            # Express entry point
 ```
 
@@ -247,8 +262,68 @@ backend/
 | POST | `/api/roundtable/:id/terminate` | Manually terminate active roundtable |
 | GET | `/api/diagrams/list` | List diagrams (proxied from diagram-tool) |
 | GET | `/api/diagrams/:id/agent-format` | Get a diagram's machine-readable text (proxied from diagram-tool) |
+| GET | `/api/usage/summary` | Usage totals and breakdowns (query: `days` = number or `all`, `kind`) |
+| GET | `/api/usage/chats/:id` | One chat's total cost and its last request's tokens and cache hit rate |
 | POST | `/api/data-export/run` | Start a data snapshot (202 if started, 409 with current status if one's already running) |
 | GET | `/api/data-export/status` | Poll the current/last snapshot job status |
+
+## Context management & cost
+
+Long chats used to resend their whole history on every message. The busiest
+chat (100 messages) cost about 76k input tokens per reply, none of it cached:
+the only cache point was on the agent prompt, which is shorter than the
+1,024-token minimum Claude needs before it caches anything.
+
+Chat requests are now built in three layers:
+
+1. **Cache-friendly order.** Content goes from most to least stable: agent
+   prompt, feature brief, chat summary (cache point), then the verbatim
+   history (cache point), then the new message. Memories and wiki snippets
+   change between turns, so they sit in a `<context>` block on the new message
+   instead of the system prompt, where they would invalidate everything after
+   them. Each turn reads the previous turn's prefix from cache at a tenth of
+   the input price.
+2. **Windowed history.** Only roughly the last `HISTORY_TOKEN_BUDGET` tokens
+   (20k) are sent verbatim. Older turns are folded into a running summary
+   (decisions, facts and lore, user preferences, open questions) by Haiku, in
+   the background after a reply.
+3. **Batched summary updates.** The summary is only rewritten once another
+   `SUMMARY_BATCH_TOKENS` (10k) of history has piled up. Every rewrite changes
+   the system prompt and costs one cache rebuild, so rewriting on every turn
+   would throw the caching away.
+
+**Measured on the real chats** with `backend/scripts/bench-context.ts`. Token
+totals come from Anthropic's token-counting endpoint; the cached/uncached split
+is estimated, and only input cost is compared, since output is the same in
+every layout:
+
+| Chat | Messages | Before | Cache only | Cache + windowed | Saving |
+|---|---|---|---|---|---|
+| Narrator (Sonnet 4.6) | 100 | 75,987 tokens / $0.228 | 76,016 / $0.033 | 19,986 / $0.016 | 93% |
+| Architect (Opus 4.8) | 56 | 68,953 tokens / $0.345 | 69,216 / $0.041 | 31,762 / $0.024 | 93% |
+
+A live check on the Narrator chat confirmed it: the second identical request
+read 18,450 tokens from cache and paid full price for 1,531.
+
+**Trade-offs**
+- **Cache lifetime.** The cache expires 5 minutes after last use. When you
+  reply after a longer pause, the prefix is written again at 1.25× the input
+  price. With windowing that "cold" message still costs about a third of what
+  it did before ($0.074 vs $0.228 on the Narrator chat). `CACHE_TTL=1h` keeps
+  the cache longer, but writes cost 2×. The Usage tab's cache hit rate shows
+  which suits how you work.
+- **Summaries lose detail.** Exact wording older than the window is gone.
+  The summary prompt keeps names, numbers and decisions verbatim. Retrieval
+  over old messages is the next step, so precise recall comes back.
+- **Token estimates are approximate** (characters ÷ 4). They are only used to
+  size the window, and they run low for code-heavy text and the Opus 4.7+
+  tokenizer, which is why the Architect chat's window is above 20k.
+- `CONTEXT_STRATEGY=full` switches back to sending the whole history (still
+  with the new caching), and every logged call records which strategy it used.
+
+Re-run the benchmark from `backend/` with `npx tsx scripts/bench-context.ts`.
+Add `--summarize` to build missing summaries first, which calls the summary
+model.
 
 ## Feature Lifecycle
 

@@ -15,6 +15,8 @@ import { saveMemory, type MemoryType } from '../agents/memoryService';
 import { getModelForAgent, normalizeAgentRole } from '../agents/modelConfig';
 import type { StoredImage } from './imageStore';
 import { slugifyTitle } from './slug';
+import { maybeUpdateSummary } from './chatSummary';
+import { recordCall } from '../llm/usageLog';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -218,7 +220,7 @@ export async function sendMessage(params: SendMessageParams): Promise<SendMessag
 
   const agentRole = normalizeAgentRole(agent.role);
 
-  const { system, messages } = await buildChatContext({
+  const { system, messages, strategy } = await buildChatContext({
     agentSystemPrompt: agent.system_prompt,
     agentId: params.agentId,
     agentRole,
@@ -241,6 +243,8 @@ export async function sendMessage(params: SendMessageParams): Promise<SendMessag
   console.log(`[${agentRole}] Using model: ${model}`);
 
   let fullResponse = '';
+  const startedAt = Date.now();
+  let firstTokenAt: number | null = null;
 
   const stream = anthropic.messages.stream({
     model,
@@ -254,6 +258,7 @@ export async function sendMessage(params: SendMessageParams): Promise<SendMessag
       event.type === 'content_block_delta' &&
       event.delta.type === 'text_delta'
     ) {
+      firstTokenAt ??= Date.now();
       const chunk = event.delta.text;
       fullResponse += chunk;
       params.onChunk(chunk);
@@ -261,8 +266,11 @@ export async function sendMessage(params: SendMessageParams): Promise<SendMessag
   }
 
   const finalMessage = await stream.finalMessage();
-  const usage = finalMessage.usage;
-  console.log(`[Cache] input: ${usage.input_tokens}, cache_read: ${usage.cache_read_input_tokens ?? 0}, cache_write: ${usage.cache_creation_input_tokens ?? 0}`);
+  recordCall(
+    { kind: 'chat', agentId: params.agentId, conversationId, strategy },
+    finalMessage,
+    { startedAt, firstTokenAt }
+  );
   if (finalMessage.stop_reason === 'max_tokens') {
     console.warn(`[Chat] Response truncated by max_tokens limit (model: ${model})`);
   }
@@ -274,6 +282,10 @@ export async function sendMessage(params: SendMessageParams): Promise<SendMessag
     fullResponse
   );
   touchChat(conversationId);
+
+  // Fold old turns into the running summary in the background, so it is
+  // ready for the next message. Never awaited: the reply is already done.
+  void maybeUpdateSummary(conversationId, params.agentId);
 
   return { conversationId, fullResponse, needsTitle: chat.title === DEFAULT_CHAT_TITLE };
 }
@@ -299,6 +311,7 @@ export async function generateChatTitle(
 
   let title = fallbackTitle(userMessage);
   try {
+    const startedAt = Date.now();
     const response = await anthropic.messages.create({
       model: TITLE_MODEL,
       max_tokens: 30,
@@ -312,6 +325,7 @@ export async function generateChatTitle(
         },
       ],
     });
+    recordCall({ kind: 'title', agentId: chat.agent_id, conversationId: chatId }, response, { startedAt });
     const block = response.content[0];
     const generated =
       block?.type === 'text' ? block.text.trim().replace(/^["'\s]+|["'.\s]+$/g, '') : '';

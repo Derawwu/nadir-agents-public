@@ -620,3 +620,66 @@ export async function fetchDataExportStatus(): Promise<DataExportJobState> {
   if (!res.ok) throw new Error(`fetchDataExportStatus failed: ${res.status}`);
   return res.json() as Promise<DataExportJobState>;
 }
+
+// ─── Usage ───────────────────────────────────────────────────────────────────
+
+export type UsageKind = 'chat' | 'roundtable_turn' | 'roundtable_summary' | 'title' | 'chat_summary';
+
+export interface UsageTotals {
+  calls: number;
+  cost: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheHitRate: number | null;
+}
+
+export interface UsageSummary {
+  range: { days: number | null; kind: UsageKind | null };
+  totals: UsageTotals;
+  previous: UsageTotals | null;
+  perMessage: { strategy: string; calls: number; avg_cost: number | null; avg_input: number | null }[];
+  daily: { day: string; agentName: string | null; cost: number | null }[];
+  byModel: { model: string; calls: number; cost: number | null }[];
+  byKind: { kind: UsageKind; calls: number; cost: number | null }[];
+  topChats: {
+    id: number;
+    title: string;
+    slug: string;
+    agentId: number;
+    agentName: string;
+    replies: number;
+    avgInput: number | null;
+    cacheRate: number | null;
+    cost: number | null;
+  }[];
+  topRoundtables: { id: number; topic: string; calls: number; cacheRate: number | null; cost: number | null }[];
+  windowedSince: string | null;
+}
+
+export interface ChatUsage {
+  calls: number;
+  cost: number;
+  last: {
+    inputTokens: number | null;
+    outputTokens: number;
+    cacheHitRate: number | null;
+    cost: number | null;
+    strategy: string | null;
+    at: string;
+  } | null;
+}
+
+export async function fetchUsageSummary(days: number | 'all', kind: UsageKind | null): Promise<UsageSummary> {
+  const params = new URLSearchParams({ days: String(days) });
+  if (kind) params.set('kind', kind);
+  const res = await fetch(`${BASE}/usage/summary?${params}`);
+  if (!res.ok) throw new Error(`Failed to fetch usage: ${res.status}`);
+  return res.json() as Promise<UsageSummary>;
+}
+
+export async function fetchChatUsage(chatId: number): Promise<ChatUsage> {
+  const res = await fetch(`${BASE}/usage/chats/${chatId}`);
+  if (!res.ok) throw new Error(`Failed to fetch chat usage: ${res.status}`);
+  return res.json() as Promise<ChatUsage>;
+}
