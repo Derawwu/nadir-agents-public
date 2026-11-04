@@ -30,6 +30,7 @@ import { saveMemory } from '../agents/memoryService';
 import { getFeatureById } from '../features/featureService';
 import { saveRoundtableSummary } from '../outline/outlineService';
 import { getModelForAgent, normalizeAgentRole } from '../agents/modelConfig';
+import { recordCall, type CallMeta } from '../llm/usageLog';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -103,9 +104,12 @@ async function streamAgentTurn(
   system: Anthropic.TextBlockParam[],
   messages: Anthropic.MessageParam[],
   model: string,
+  meta: CallMeta,
   onChunk: (chunk: string) => void
 ): Promise<string> {
   let full = '';
+  const startedAt = Date.now();
+  let firstTokenAt: number | null = null;
 
   const stream = anthropic.messages.stream({
     model,
@@ -119,6 +123,7 @@ async function streamAgentTurn(
       event.type === 'content_block_delta' &&
       event.delta.type === 'text_delta'
     ) {
+      firstTokenAt ??= Date.now();
       const chunk = event.delta.text;
       full += chunk;
       onChunk(chunk);
@@ -126,8 +131,7 @@ async function streamAgentTurn(
   }
 
   const finalMessage = await stream.finalMessage();
-  const usage = finalMessage.usage;
-  console.log(`[Cache] input: ${usage.input_tokens}, cache_read: ${usage.cache_read_input_tokens ?? 0}, cache_write: ${usage.cache_creation_input_tokens ?? 0}`);
+  recordCall(meta, finalMessage, { startedAt, firstTokenAt });
   if (finalMessage.stop_reason === 'max_tokens') {
     console.warn(`[Roundtable] Response truncated by max_tokens limit (model: ${model})`);
   }
@@ -185,11 +189,14 @@ Produce a structured summary in this exact JSON format (no markdown wrapper):
 
 Be precise. Empty arrays are valid if no items apply. Do not invent items not present in the transcript.`;
 
+  const startedAt = Date.now();
   const response = await anthropic.messages.create({
     model: SUMMARIZER_MODEL,
     max_tokens: 1024,
     messages: [{ role: 'user', content: prompt }],
   });
+
+  recordCall({ kind: 'roundtable_summary', roundtableId }, response, { startedAt });
 
   const rawText =
     response.content[0].type === 'text' ? response.content[0].text : '{}';
@@ -293,7 +300,7 @@ async function runDiscussionSession(params: {
       const model = getModelForAgent(agentRole);
       console.log(`[${agentRole}] Using model: ${model}`);
 
-      const agentResponse = await streamAgentTurn(system, messages, model, (chunk) => {
+      const agentResponse = await streamAgentTurn(system, messages, model, { kind: 'roundtable_turn', agentId: agent.id, roundtableId }, (chunk) => {
         onEvent(
           `data: ${JSON.stringify({ type: 'chunk', agentId: agent.id, agentName: agent.name, round: currentRound, chunk })}\n\n`
         );

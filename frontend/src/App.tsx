@@ -4,6 +4,7 @@ import { RoundtablePage } from './pages/RoundtablePage';
 import { WikiTab } from './components/WikiTab';
 import { PlaneTab } from './components/PlaneTab';
 import { DiagramsTab } from './components/DiagramsTab';
+import { UsagePage } from './pages/UsagePage';
 import { ExportDataButton } from './components/ExportDataButton';
 import { ContextTrayProvider } from './contexts/ContextTrayContext';
 
@@ -73,6 +74,17 @@ export default function App() {
               Diagrams
             </NavLink>
 
+            <NavLink
+              to="/usage"
+              className={({ isActive }) =>
+                `text-sm transition-colors ${
+                  isActive ? 'text-gray-100' : 'text-gray-500 hover:text-gray-300'
+                }`
+              }
+            >
+              Usage
+            </NavLink>
+
             <div className="ml-auto">
               <ExportDataButton />
             </div>
@@ -87,6 +99,7 @@ export default function App() {
               <Route path="/wiki" element={<WikiTab />} />
               <Route path="/plane" element={<PlaneTab />} />
               <Route path="/diagrams" element={<DiagramsTab />} />
+              <Route path="/usage" element={<UsagePage />} />
             </Routes>
           </div>
         </div>

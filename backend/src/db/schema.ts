@@ -206,4 +206,42 @@ export function runMigrations(): void {
   db.exec(
     'CREATE INDEX IF NOT EXISTS idx_memories_agent_scope ON memories(agent_id, scope)'
   );
+
+  // ── Migration: LLM usage log (one row per Claude API call) ───────────────
+  // cost_usd is computed at insert time from llm/pricing.ts, so later price
+  // edits don't rewrite history. input_tokens excludes cached tokens, matching
+  // the API's usage fields.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS llm_calls (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      kind TEXT NOT NULL,
+      agent_id INTEGER REFERENCES agents(id),
+      conversation_id INTEGER REFERENCES conversations(id),
+      roundtable_id INTEGER REFERENCES roundtables(id),
+      model TEXT NOT NULL,
+      strategy TEXT,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+      stop_reason TEXT,
+      latency_ms INTEGER,
+      ttft_ms INTEGER,
+      cost_usd REAL
+    );
+    CREATE INDEX IF NOT EXISTS idx_llm_calls_created ON llm_calls(created_at);
+    CREATE INDEX IF NOT EXISTS idx_llm_calls_conversation ON llm_calls(conversation_id);
+  `);
+
+  // ── Migration: running chat summary for history windowing ────────────────
+  // summary covers every message with id <= summary_upto_message_id; newer
+  // messages are sent verbatim.
+  const convCols2 = new Set(
+    (db.prepare('PRAGMA table_info(conversations)').all() as unknown as ColRow[]).map((r) => r.name)
+  );
+  if (!convCols2.has('summary')) {
+    db.exec('ALTER TABLE conversations ADD COLUMN summary TEXT');
+    db.exec('ALTER TABLE conversations ADD COLUMN summary_upto_message_id INTEGER');
+  }
 }

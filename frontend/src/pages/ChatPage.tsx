@@ -11,6 +11,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { ChatSidebar } from '../components/ChatSidebar';
 import { FeatureSelector } from '../components/FeatureSelector';
+import { ChatUsageBadge } from '../components/ChatUsageBadge';
 import { ChatWindow } from '../components/ChatWindow';
 import { MemoryPanel } from '../components/MemoryPanel';
 import {
@@ -47,6 +48,7 @@ export function ChatPage() {
   const [chatsAgentId, setChatsAgentId] = useState<number | null>(null);
   const [showArchived, setShowArchived] = useState(false);
   const [activeChat, setActiveChatState] = useState<Chat | null>(null);
+  const [usageRefresh, setUsageRefresh] = useState(0);
   const [initialMessages, setInitialMessages] = useState<StoredMessage[]>([]);
   const [windowKey, setWindowKey] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
@@ -240,6 +242,7 @@ export function ChatPage() {
 
   function handleConversationCreated(id: number) {
     void refreshChats();
+    setUsageRefresh((n) => n + 1);
     // A draft just became a real chat: move the URL from /new to its slug
     // without remounting the window (the stream may still deliver a title).
     if (isDraft) refreshActiveMeta(id);
@@ -358,8 +361,11 @@ export function ChatPage() {
             </span>
           )}
 
+          <span className="ml-auto" />
+          <ChatUsageBadge chatId={activeChat?.id ?? null} refreshKey={usageRefresh} />
+
           <button
-            className="ml-auto text-xs text-gray-400 hover:text-gray-200 border border-border rounded px-2 py-1
+            className="text-xs text-gray-400 hover:text-gray-200 border border-border rounded px-2 py-1
                        max-w-[16rem] truncate"
             onClick={() => setFeaturePickerOpen((v) => !v)}
             title="The feature this chat is about"
