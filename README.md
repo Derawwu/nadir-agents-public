@@ -236,6 +236,7 @@ backend/
       plane.ts                  # Plane issue tracker proxy
       dataExport.ts               # POST /api/data-export/run, GET /api/data-export/status
       usage.ts                    # GET /api/usage/summary, GET /api/usage/chats/:id
+      models.ts                   # GET /api/models/status
     index.ts            # Express entry point
 ```
 
@@ -264,6 +265,7 @@ backend/
 | GET | `/api/diagrams/:id/agent-format` | Get a diagram's machine-readable text (proxied from diagram-tool) |
 | GET | `/api/usage/summary` | Usage totals and breakdowns (query: `days` = number or `all`, `kind`) |
 | GET | `/api/usage/chats/:id` | One chat's total cost and its last request's tokens and cache hit rate |
+| GET | `/api/models/status` | Whether each configured model is current, deprecated, or has a newer model in its family (cached 1h; `refresh=1` to bypass) |
 | POST | `/api/data-export/run` | Start a data snapshot (202 if started, 409 with current status if one's already running) |
 | GET | `/api/data-export/status` | Poll the current/last snapshot job status |
 
@@ -349,6 +351,12 @@ Each agent's model is set in `backend/.env`, and so is how hard it thinks:
   shows a notice with the category instead of an empty message.
 - Pricing, including Haiku 5.5's higher rate above 100k prompt tokens and Opus
   5.5's cheaper cache reads, lives in `backend/src/llm/pricing.ts`.
+- **Staying current.** On the first page load of a browser session the app asks
+  the backend to compare every configured model with Anthropic's Models API.
+  If a newer model exists in the same family (Opus, Sonnet, Haiku), or a model
+  is deprecated or unknown, a banner lists which env var to change and to what.
+  The result is kept in `sessionStorage`, so it doesn't run again until a new
+  session, and the backend caches the model list for an hour.
 Add `--summarize` to build missing summaries first, which calls the summary
 model.
 

@@ -23,6 +23,7 @@ import outlineRouter from './routes/outline';
 import diagramsRouter from './routes/diagrams';
 import dataExportRouter from './routes/dataExport';
 import usageRouter from './routes/usage';
+import modelsRouter from './routes/models';
 import { getUploadsDir } from './chat/imageStore';
 
 dotenv.config();
@@ -67,6 +68,7 @@ app.use('/api/outline', outlineRouter);
 app.use('/api/diagrams', diagramsRouter);
 app.use('/api/data-export', dataExportRouter);
 app.use('/api/usage', usageRouter);
+app.use('/api/models', modelsRouter);
 app.use('/uploads', express.static(getUploadsDir()));
 
 app.listen(PORT, () => {
