@@ -97,8 +97,8 @@ snapshot after every commit here — see "Automatic data export" below.
 ### 4. Run
 
 Easiest: run `start.bat` from the repo root — it starts Podman, Plane, Outline,
-and the agent backend/frontend in separate windows. The diagram-tool isn't
-wired into `start.bat` yet; start it manually when you need it:
+the agent backend/frontend, and the diagram-tool backend/editor in separate
+windows. To start the diagram-tool on its own:
 
 ```bash
 cd diagram-tool/backend && npm run dev   # http://localhost:3010

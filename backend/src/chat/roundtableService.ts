@@ -109,7 +109,7 @@ async function streamAgentTurn(
 
   const stream = anthropic.messages.stream({
     model,
-    max_tokens: 2048,
+    max_tokens: 4096,
     system,
     messages,
   });
@@ -128,6 +128,9 @@ async function streamAgentTurn(
   const finalMessage = await stream.finalMessage();
   const usage = finalMessage.usage;
   console.log(`[Cache] input: ${usage.input_tokens}, cache_read: ${usage.cache_read_input_tokens ?? 0}, cache_write: ${usage.cache_creation_input_tokens ?? 0}`);
+  if (finalMessage.stop_reason === 'max_tokens') {
+    console.warn(`[Roundtable] Response truncated by max_tokens limit (model: ${model})`);
+  }
 
   return full;
 }
@@ -216,6 +219,8 @@ Be precise. Empty arrays are valid if no items apply. Do not invent items not pr
     saveMemory({
       agentId: agent.id,
       featureId,
+      scope: 'feature',
+      source: 'roundtable',
       type: 'decision',
       content: agentContent,
     });

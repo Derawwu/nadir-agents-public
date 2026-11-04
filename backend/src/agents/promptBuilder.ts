@@ -14,7 +14,7 @@
 
 import type { ContentBlockParam, MessageParam, TextBlockParam } from '@anthropic-ai/sdk/resources/messages';
 import { getFeatureById, type Feature } from '../features/featureService';
-import { getMemoriesForAgent, formatMemoriesForPrompt } from './memoryService';
+import { getMemoriesForContext, formatMemoriesForPrompt } from './memoryService';
 import { searchDocuments, type AgentRole } from '../outline/outlineService';
 import { readImageAsBase64, type StoredImage } from '../chat/imageStore';
 import db from '../db/connection';
@@ -233,7 +233,11 @@ export async function buildChatContext(params: {
   userImages?: StoredImage[];
 }): Promise<{ system: TextBlockParam[]; messages: MessageParam[] }> {
   const feature = params.featureId ? (getFeatureById(params.featureId) ?? null) : null;
-  const memories = getMemoriesForAgent(params.agentId, params.featureId);
+  const memories = getMemoriesForContext({
+    agentId: params.agentId,
+    featureId: params.featureId,
+    conversationId: params.conversationId,
+  });
   const memoriesBlock = formatMemoriesForPrompt(memories);
 
   const parts = await buildSystemBlocks(params.agentSystemPrompt, feature, memoriesBlock, params.agentRole);
@@ -260,7 +264,8 @@ export async function buildRoundtableContext(params: {
   priorTurns: Array<{ agentName: string; round: number; content: string }>;
 }): Promise<{ system: TextBlockParam[]; messages: MessageParam[] }> {
   const feature = getFeatureById(params.featureId) ?? null;
-  const memories = getMemoriesForAgent(params.agentId, params.featureId);
+  // Roundtables have no chat, so they see agent-wide and feature memories only.
+  const memories = getMemoriesForContext({ agentId: params.agentId, featureId: params.featureId });
   const memoriesBlock = formatMemoriesForPrompt(memories);
 
   const parts = await buildSystemBlocks(params.agentSystemPrompt, feature, memoriesBlock, params.agentRole);
