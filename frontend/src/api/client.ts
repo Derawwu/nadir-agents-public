@@ -44,7 +44,8 @@ export type MemoryType = 'decision' | 'lore' | 'technical' | 'visual' | 'flag' |
 
 export type ChatSSEEvent =
   | { type: 'chunk'; text: string }
-  | { type: 'done'; conversationId: number }
+  | { type: 'done'; conversationId: number; slug: string | null }
+  | { type: 'title'; conversationId: number; title: string; slug: string }
   | { type: 'error'; error: string };
 
 export type RoundtableSSEEvent =
@@ -137,20 +138,109 @@ export interface StoredMessage {
   created_at: string;
 }
 
-export interface ConversationHistory {
-  conversationId: number | null;
+export interface Chat {
+  id: number;
+  agent_id: number;
+  feature_id: number | null;
+  title: string;
+  /** URL segment, unique per agent: /chat/<agent>/<slug> */
+  slug: string;
+  pinned: boolean;
+  archived: boolean;
+  created_at: string;
+  updated_at: string;
+  message_count: number;
+}
+
+export interface ChatDetail {
+  chat: Chat;
   messages: StoredMessage[];
 }
 
-export async function fetchConversationHistory(
-  agentId: number,
-  featureId: number | null
-): Promise<ConversationHistory> {
+export async function fetchChats(agentId: number, includeArchived = false): Promise<Chat[]> {
   const params = new URLSearchParams({ agentId: String(agentId) });
-  if (featureId !== null) params.set('featureId', String(featureId));
-  const res = await fetch(`${BASE}/chat/conversation?${params}`);
-  if (!res.ok) throw new Error(`fetchConversationHistory failed: ${res.status}`);
-  return res.json() as Promise<ConversationHistory>;
+  if (includeArchived) params.set('archived', '1');
+  const res = await fetch(`${BASE}/chat/chats?${params}`);
+  if (!res.ok) throw new Error(`fetchChats failed: ${res.status}`);
+  return res.json() as Promise<Chat[]>;
+}
+
+/** Resolves a readable chat URL; returns null if no live chat has that slug. */
+export async function fetchChatBySlug(agentId: number, slug: string): Promise<ChatDetail | null> {
+  const params = new URLSearchParams({ agentId: String(agentId), slug });
+  const res = await fetch(`${BASE}/chat/chats/by-slug?${params}`);
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`fetchChatBySlug failed: ${res.status}`);
+  return res.json() as Promise<ChatDetail>;
+}
+
+/** URL segment for an agent: "Narrator" → "narrator", "UX/UI" → "ux-ui". */
+export function agentSlug(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
+export async function fetchChat(chatId: number): Promise<ChatDetail> {
+  const res = await fetch(`${BASE}/chat/chats/${chatId}`);
+  if (!res.ok) throw new Error(`fetchChat failed: ${res.status}`);
+  return res.json() as Promise<ChatDetail>;
+}
+
+export async function updateChat(
+  chatId: number,
+  patch: Partial<{ title: string; pinned: boolean; archived: boolean; featureId: number | null }>
+): Promise<Chat> {
+  const res = await fetch(`${BASE}/chat/chats/${chatId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new Error(`updateChat failed: ${res.status}`);
+  return res.json() as Promise<Chat>;
+}
+
+export async function deleteChat(chatId: number): Promise<void> {
+  const res = await fetch(`${BASE}/chat/chats/${chatId}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error(`deleteChat failed: ${res.status}`);
+}
+
+export type MemoryScope = 'chat' | 'feature' | 'agent';
+
+export interface Memory {
+  id: number;
+  agent_id: number;
+  feature_id: number | null;
+  conversation_id: number | null;
+  scope: MemoryScope;
+  source: 'user' | 'roundtable';
+  type: MemoryType;
+  content: string;
+  created_at: string;
+}
+
+export async function fetchMemories(
+  agentId: number,
+  ctx: { chatId: number | null; featureId: number | null }
+): Promise<Memory[]> {
+  const params = new URLSearchParams();
+  if (ctx.chatId !== null) params.set('chatId', String(ctx.chatId));
+  if (ctx.featureId !== null) params.set('featureId', String(ctx.featureId));
+  const res = await fetch(`${BASE}/agents/${agentId}/memories?${params}`);
+  if (!res.ok) throw new Error(`fetchMemories failed: ${res.status}`);
+  return res.json() as Promise<Memory[]>;
+}
+
+export async function updateMemoryScope(
+  agentId: number,
+  memoryId: number,
+  body: { scope: MemoryScope; chatId?: number | null; featureId?: number | null }
+): Promise<Memory> {
+  const res = await fetch(`${BASE}/agents/${agentId}/memories/${memoryId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(`updateMemoryScope failed: ${res.status}`);
+  return res.json() as Promise<Memory>;
 }
 
 // ─── Chat ─────────────────────────────────────────────────────────────────────
@@ -245,7 +335,6 @@ export async function uploadChatImage(dataUrl: string): Promise<PendingImage> {
 export async function saveMemory(params: {
   conversationId: number;
   agentId: number;
-  featureId?: number | null;
   type: MemoryType;
   content: string;
 }): Promise<{ memoryId: number }> {

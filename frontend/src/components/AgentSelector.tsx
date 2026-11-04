@@ -1,7 +1,7 @@
 import type { Agent } from '../api/client';
 
 // Maps agent name to its theme color class for visual distinction.
-const AGENT_COLORS: Record<string, string> = {
+export const AGENT_COLORS: Record<string, string> = {
   Narrator: 'text-agent-narrator border-agent-narrator',
   Architect: 'text-agent-architect border-agent-architect',
   'UX/UI': 'text-agent-ux border-agent-ux',

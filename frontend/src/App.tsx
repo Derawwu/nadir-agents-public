@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, NavLink, Navigate } from 'react-router-dom';
 import { ChatPage } from './pages/ChatPage';
 import { RoundtablePage } from './pages/RoundtablePage';
 import { WikiTab } from './components/WikiTab';
@@ -19,8 +19,7 @@ export default function App() {
             </span>
 
             <NavLink
-              to="/"
-              end
+              to="/chat"
               className={({ isActive }) =>
                 `text-sm transition-colors ${
                   isActive ? 'text-gray-100' : 'text-gray-500 hover:text-gray-300'
@@ -82,7 +81,8 @@ export default function App() {
           {/* Page content */}
           <div className="flex-1 min-h-0">
             <Routes>
-              <Route path="/" element={<ChatPage />} />
+              <Route path="/" element={<Navigate to="/chat" replace />} />
+              <Route path="/chat/:agentSlug?/:chatSlug?" element={<ChatPage />} />
               <Route path="/roundtable" element={<RoundtablePage />} />
               <Route path="/wiki" element={<WikiTab />} />
               <Route path="/plane" element={<PlaneTab />} />

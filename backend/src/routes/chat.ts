@@ -1,19 +1,45 @@
 /**
  * Chat routes.
  *
- * POST /api/chat/message — streams assistant response via SSE.
- * POST /api/chat/memory  — saves a memory entry from a chat message.
+ * POST   /api/chat/upload-image   — stores a pasted image
+ * POST   /api/chat/message        — streams assistant response via SSE
+ * POST   /api/chat/memory         — saves a chat-scoped memory from a message
+ * GET    /api/chat/chats?agentId= — lists an agent's chats (&archived=1 to include archived)
+ * POST   /api/chat/chats          — creates an empty chat
+ * GET    /api/chat/chats/by-slug  — chat + messages by ?agentId=&slug=
+ * GET    /api/chat/chats/:id      — chat metadata + messages
+ * PATCH  /api/chat/chats/:id      — rename / pin / archive / change feature
+ * DELETE /api/chat/chats/:id      — soft-deletes a chat
  *
  * SSE format: each event is `data: <json>\n\n`
- * Event types: { type: 'chunk', text: string } | { type: 'done', conversationId: number }
+ * Event types:
+ *   { type: 'chunk', text } | { type: 'done', conversationId, slug }
+ *   | { type: 'title', conversationId, title, slug } | { type: 'error', error }
  */
 
 import { Router, type Request, type Response } from 'express';
-import { sendMessage, saveConversationMemory, getConversationHistory } from '../chat/chatService';
+import {
+  sendMessage,
+  saveConversationMemory,
+  listChats,
+  getChat,
+  getChatBySlug,
+  createChat,
+  updateChat,
+  deleteChat,
+  getChatMessages,
+  generateChatTitle,
+} from '../chat/chatService';
 import { saveImageFromDataUrl } from '../chat/imageStore';
-import type { MemoryType } from '../agents/memoryService';
+import { MEMORY_TYPES, type MemoryType } from '../agents/memoryService';
 
 const router = Router();
+
+function parseId(raw: unknown): number | null {
+  if (typeof raw !== 'string' && typeof raw !== 'number') return null;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : null;
+}
 
 // POST /api/chat/upload-image
 // Body: { dataUrl: string } — a `data:image/...;base64,...` URL from a clipboard paste.
@@ -32,27 +58,84 @@ router.post('/upload-image', (req: Request, res: Response) => {
   }
 });
 
-router.get('/conversation', (req: Request, res: Response) => {
-  const rawAgentId = req.query.agentId;
-  const rawFeatureId = req.query.featureId;
+// ─── Chats ───────────────────────────────────────────────────────────────────
 
-  if (!rawAgentId || typeof rawAgentId !== 'string') {
+router.get('/chats', (req: Request, res: Response) => {
+  const agentId = parseId(req.query.agentId);
+  if (!agentId) {
     res.status(400).json({ error: 'agentId is required' });
     return;
   }
+  res.json(listChats(agentId, req.query.archived === '1'));
+});
 
-  const agentId = Number(rawAgentId);
-  if (isNaN(agentId)) {
-    res.status(400).json({ error: 'agentId must be a number' });
+router.post('/chats', (req: Request, res: Response) => {
+  const { agentId, featureId, title } = req.body as {
+    agentId?: number;
+    featureId?: number | null;
+    title?: string;
+  };
+  if (!parseId(agentId)) {
+    res.status(400).json({ error: 'agentId is required' });
+    return;
+  }
+  res.status(201).json(createChat({ agentId: agentId!, featureId: featureId ?? null, title }));
+});
+
+// GET /api/chat/chats/by-slug?agentId=&slug= — resolves a readable chat URL.
+router.get('/chats/by-slug', (req: Request, res: Response) => {
+  const agentId = parseId(req.query.agentId);
+  const slug = typeof req.query.slug === 'string' ? req.query.slug : '';
+  const chat = agentId && slug ? getChatBySlug(agentId, slug) : undefined;
+  if (!chat) {
+    res.status(404).json({ error: 'Chat not found' });
+    return;
+  }
+  res.json({ chat, messages: getChatMessages(chat.id) });
+});
+
+router.get('/chats/:id', (req: Request, res: Response) => {
+  const id = parseId(req.params.id);
+  const chat = id ? getChat(id) : undefined;
+  if (!chat) {
+    res.status(404).json({ error: 'Chat not found' });
+    return;
+  }
+  res.json({ chat, messages: getChatMessages(chat.id) });
+});
+
+router.patch('/chats/:id', (req: Request, res: Response) => {
+  const id = parseId(req.params.id);
+  if (!id || !getChat(id)) {
+    res.status(404).json({ error: 'Chat not found' });
     return;
   }
 
-  const featureId =
-    rawFeatureId && typeof rawFeatureId === 'string' ? Number(rawFeatureId) : null;
+  const body = req.body as {
+    title?: unknown;
+    pinned?: unknown;
+    archived?: unknown;
+    featureId?: unknown;
+  };
+  const patch: Parameters<typeof updateChat>[1] = {};
+  if (typeof body.title === 'string') patch.title = body.title.slice(0, 120);
+  if (typeof body.pinned === 'boolean') patch.pinned = body.pinned;
+  if (typeof body.archived === 'boolean') patch.archived = body.archived;
+  if (body.featureId === null || typeof body.featureId === 'number') patch.featureId = body.featureId;
 
-  const history = getConversationHistory(agentId, featureId);
-  res.json(history);
+  res.json(updateChat(id, patch));
 });
+
+router.delete('/chats/:id', (req: Request, res: Response) => {
+  const id = parseId(req.params.id);
+  if (!id || !deleteChat(id)) {
+    res.status(404).json({ error: 'Chat not found' });
+    return;
+  }
+  res.status(204).end();
+});
+
+// ─── Messaging ───────────────────────────────────────────────────────────────
 
 router.post('/message', async (req: Request, res: Response) => {
   const { agentId, featureId, message, images, conversationId } = req.body as {
@@ -87,22 +170,37 @@ router.post('/message', async (req: Request, res: Response) => {
       },
     });
 
+    const chat = getChat(result.conversationId);
     res.write(
-      `data: ${JSON.stringify({ type: 'done', conversationId: result.conversationId })}\n\n`
+      `data: ${JSON.stringify({ type: 'done', conversationId: result.conversationId, slug: chat?.slug ?? null })}\n\n`
     );
+
+    // Auto-title after 'done' so the reply is never held up by it.
+    if (result.needsTitle) {
+      const titled = await generateChatTitle(result.conversationId, message ?? '', result.fullResponse);
+      if (titled) {
+        res.write(
+          `data: ${JSON.stringify({
+            type: 'title',
+            conversationId: titled.id,
+            title: titled.title,
+            slug: titled.slug,
+          })}\n\n`
+        );
+      }
+    }
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Unknown error';
-    res.write(`data: ${JSON.stringify({ type: 'error', error: message })}\n\n`);
+    const errMessage = err instanceof Error ? err.message : 'Unknown error';
+    res.write(`data: ${JSON.stringify({ type: 'error', error: errMessage })}\n\n`);
   } finally {
     res.end();
   }
 });
 
 router.post('/memory', (req: Request, res: Response) => {
-  const { conversationId, agentId, featureId, type, content } = req.body as {
+  const { conversationId, agentId, type, content } = req.body as {
     conversationId?: number;
     agentId?: number;
-    featureId?: number | null;
     type?: MemoryType;
     content?: string;
   };
@@ -112,21 +210,17 @@ router.post('/memory', (req: Request, res: Response) => {
     return;
   }
 
-  const validTypes: MemoryType[] = ['decision', 'lore', 'technical', 'visual', 'flag', 'conflict'];
-  if (!validTypes.includes(type)) {
-    res.status(400).json({ error: `type must be one of: ${validTypes.join(', ')}` });
+  if (!MEMORY_TYPES.includes(type)) {
+    res.status(400).json({ error: `type must be one of: ${MEMORY_TYPES.join(', ')}` });
     return;
   }
 
-  const memoryId = saveConversationMemory({
-    conversationId,
-    agentId,
-    featureId: featureId ?? null,
-    type,
-    content,
-  });
-
-  res.status(201).json({ memoryId });
+  try {
+    const memoryId = saveConversationMemory({ conversationId, agentId, type, content });
+    res.status(201).json({ memoryId });
+  } catch (err) {
+    res.status(404).json({ error: err instanceof Error ? err.message : 'Chat not found' });
+  }
 });
 
 export default router;

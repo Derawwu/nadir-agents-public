@@ -7,6 +7,7 @@
  */
 
 import db from './connection';
+import { slugifyTitle } from '../chat/slug';
 
 export function runMigrations(): void {
   db.exec(`
@@ -114,4 +115,95 @@ export function runMigrations(): void {
   if (!messagesCols.has('images')) {
     db.exec('ALTER TABLE messages ADD COLUMN images TEXT');
   }
+
+  // ── Migration: multiple chats per agent ──────────────────────────────────
+  // Conversations become user-visible "chats" with a title, pin/archive state
+  // and a last-activity timestamp. Chats that existed before this migration
+  // are titled "Misc" so prior history stays reachable as its own chat.
+  const convCols = new Set(
+    (db.prepare('PRAGMA table_info(conversations)').all() as unknown as ColRow[]).map((r) => r.name)
+  );
+  if (!convCols.has('title')) {
+    db.exec(`ALTER TABLE conversations ADD COLUMN title TEXT NOT NULL DEFAULT 'New chat'`);
+    db.exec(`UPDATE conversations SET title = 'Misc'`);
+  }
+  if (!convCols.has('updated_at')) {
+    // ALTER TABLE cannot use a non-constant default, so backfill explicitly.
+    db.exec('ALTER TABLE conversations ADD COLUMN updated_at TEXT');
+    db.exec(`
+      UPDATE conversations SET updated_at = COALESCE(
+        (SELECT MAX(m.created_at) FROM messages m WHERE m.conversation_id = conversations.id),
+        created_at
+      )
+    `);
+  }
+  if (!convCols.has('pinned')) {
+    db.exec('ALTER TABLE conversations ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!convCols.has('archived_at')) {
+    db.exec('ALTER TABLE conversations ADD COLUMN archived_at TEXT');
+  }
+  if (!convCols.has('deleted_at')) {
+    db.exec('ALTER TABLE conversations ADD COLUMN deleted_at TEXT');
+  }
+  db.exec(
+    'CREATE INDEX IF NOT EXISTS idx_conversations_agent_updated ON conversations(agent_id, updated_at)'
+  );
+
+  // ── Migration: readable chat URLs (/chat/<agent>/<slug>) ─────────────────
+  // slug is derived from the title and unique per agent among live chats.
+  if (!convCols.has('slug')) {
+    db.exec('ALTER TABLE conversations ADD COLUMN slug TEXT');
+    const rows = db
+      .prepare('SELECT id, agent_id, title FROM conversations ORDER BY id ASC')
+      .all() as unknown as { id: number; agent_id: number; title: string }[];
+    const taken = new Map<number, Set<string>>();
+    for (const row of rows) {
+      const used = taken.get(row.agent_id) ?? new Set<string>();
+      const base = slugifyTitle(row.title);
+      let slug = base;
+      for (let n = 2; used.has(slug); n++) slug = `${base}-${n}`;
+      used.add(slug);
+      taken.set(row.agent_id, used);
+      db.prepare('UPDATE conversations SET slug = ? WHERE id = ?').run(slug, row.id);
+    }
+  }
+  db.exec(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_conversations_agent_slug
+     ON conversations(agent_id, slug) WHERE deleted_at IS NULL`
+  );
+
+  // ── Migration: memory scoping (chat / feature / agent) ───────────────────
+  // scope = 'chat'    → injected only into conversation_id's chat
+  // scope = 'feature' → shared by every chat (and roundtable) on feature_id
+  // scope = 'agent'   → global for the agent
+  const memCols = new Set(
+    (db.prepare('PRAGMA table_info(memories)').all() as unknown as ColRow[]).map((r) => r.name)
+  );
+  if (!memCols.has('scope')) {
+    db.exec('ALTER TABLE memories ADD COLUMN conversation_id INTEGER REFERENCES conversations(id)');
+    db.exec(`ALTER TABLE memories ADD COLUMN scope TEXT NOT NULL DEFAULT 'agent'`);
+    db.exec(`ALTER TABLE memories ADD COLUMN source TEXT NOT NULL DEFAULT 'user'`);
+
+    // Roundtable summaries are feature-wide knowledge — keep them shared.
+    db.exec(`
+      UPDATE memories SET scope = 'feature', source = 'roundtable'
+      WHERE content LIKE 'Roundtable on "%' AND feature_id IS NOT NULL
+    `);
+    // Memories saved manually from chat belong to that agent's Misc chat.
+    db.exec(`
+      UPDATE memories SET
+        scope = 'chat',
+        conversation_id = (
+          SELECT c.id FROM conversations c
+          WHERE c.agent_id = memories.agent_id
+          ORDER BY c.created_at ASC LIMIT 1
+        )
+      WHERE source = 'user'
+        AND EXISTS (SELECT 1 FROM conversations c WHERE c.agent_id = memories.agent_id)
+    `);
+  }
+  db.exec(
+    'CREATE INDEX IF NOT EXISTS idx_memories_agent_scope ON memories(agent_id, scope)'
+  );
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { MessageBubble } from './MessageBubble';
 import { ContextTrayBar } from './ContextTrayBar';
 import { useContextTray } from '../contexts/ContextTrayContext';
@@ -22,7 +22,10 @@ interface Props {
   featureId: number | null;
   conversationId: number | null;
   initialMessages: StoredMessage[];
-  onConversationCreated: (id: number) => void;
+  /** Fires after each completed reply with the chat id (new or existing). */
+  onConversationCreated: (id: number, slug: string | null) => void;
+  /** Fires when the backend auto-titles a new chat (the slug changes with it). */
+  onTitleGenerated?: (id: number, title: string, slug: string) => void;
   onMemorySaved: () => void;
 }
 
@@ -35,6 +38,7 @@ export function ChatWindow({
   conversationId,
   initialMessages,
   onConversationCreated,
+  onTitleGenerated,
   onMemorySaved,
 }: Props) {
   const [messages, setMessages] = useState<Message[]>(() =>
@@ -69,6 +73,16 @@ export function ChatWindow({
   useEffect(() => {
     activeConvRef.current = conversationId;
   }, [conversationId]);
+
+  // Opening a chat: jump straight to the latest message before paint, so a
+  // long history doesn't animate-scroll from the top.
+  useLayoutEffect(() => {
+    const el = listRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+    prevMessageCountRef.current = messages.length;
+    // Runs once per mounted chat (ChatWindow is keyed by chat).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Autoscroll only when a new message is appended (e.g. on send), not while
   // an existing assistant message's content is growing mid-stream.
@@ -234,13 +248,15 @@ export function ChatWindow({
         } else if (event.type === 'done') {
           resolvedConvId = event.conversationId;
           activeConvRef.current = event.conversationId;
-          onConversationCreated(event.conversationId);
+          onConversationCreated(event.conversationId, event.slug);
           setMessages((prev) =>
             prev.map((m) =>
               m.id === assistantMsgId ? { ...m, isStreaming: false } : m
             )
           );
           setSending(false);
+        } else if (event.type === 'title') {
+          onTitleGenerated?.(event.conversationId, event.title, event.slug);
         } else if (event.type === 'error') {
           setError(event.error);
           setMessages((prev) =>
@@ -261,7 +277,6 @@ export function ChatWindow({
     await saveMemory({
       conversationId: activeConvRef.current,
       agentId,
-      featureId,
       type,
       content: messageContent,
     });

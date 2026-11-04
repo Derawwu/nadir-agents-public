@@ -57,22 +57,20 @@ and how to refresh it.
 
 ### 1. Environment
 
-Each service reads its own `.env` from its own directory (`backend/.env`,
-`diagram-tool/backend/.env`, `outline/.env`). Copy the relevant `.env.example`
-and fill in secrets, e.g.:
+Each service reads its own `.env` from its own directory. Copy each
+`.env.example` and fill in the placeholders:
 
 ```bash
+cp backend/.env.example backend/.env
+cp outline/.env.example outline/.env
 cp diagram-tool/backend/.env.example diagram-tool/backend/.env
 ```
 
-Minimum `backend/.env`:
-
-```
-ANTHROPIC_API_KEY=your_key_here
-PORT=3001
-DB_PATH=./data/nadir.db
-CORS_ORIGIN=http://localhost:5173
-```
+Only `ANTHROPIC_API_KEY` is needed to chat with the agents; the Plane and
+Outline values are needed for those integrations. Every variable is
+explained in the example files. For `outline/.env`, set
+`OUTLINE_PG_PASSWORD` (and the matching password inside `DATABASE_URL`)
+before the first `docker-compose up`.
 
 ### 2. Install dependencies
 
@@ -97,8 +95,8 @@ snapshot after every commit here — see "Automatic data export" below.
 ### 4. Run
 
 Easiest: run `start.bat` from the repo root — it starts Podman, Plane, Outline,
-and the agent backend/frontend in separate windows. The diagram-tool isn't
-wired into `start.bat` yet; start it manually when you need it:
+the agent backend/frontend, and the diagram-tool backend/editor in separate
+windows. To start the diagram-tool on its own:
 
 ```bash
 cd diagram-tool/backend && npm run dev   # http://localhost:3010
@@ -230,12 +228,19 @@ backend/
 | Method | Path | Description |
 |--------|------|-------------|
 | GET | `/api/agents` | List all agents |
-| GET | `/api/agents/:id/memories` | Get agent memories (query: `featureId`, `limit`) |
+| GET | `/api/agents/:id/memories` | Memories visible in a context, each tagged with its scope (query: `chatId`, `featureId`, `limit`) |
+| PATCH | `/api/agents/:id/memories/:memoryId` | Move a memory between scopes (`scope`: `chat` / `feature` / `agent`) |
 | GET | `/api/features` | List all features |
 | POST | `/api/features` | Create feature (`name`, `description?`, `phase?`, `locked_decisions?`) |
 | PATCH | `/api/features/:id` | Update feature (partial) |
-| POST | `/api/chat/message` | Send chat message (SSE response) |
-| POST | `/api/chat/memory` | Save a memory from a conversation |
+| GET | `/api/chat/chats` | List an agent's chats (query: `agentId`, `archived=1` to include archived) |
+| POST | `/api/chat/chats` | Create an empty chat (`agentId`, `featureId?`, `title?`) |
+| GET | `/api/chat/chats/by-slug` | Chat + messages by URL slug (query: `agentId`, `slug`) |
+| GET | `/api/chat/chats/:id` | Chat + messages |
+| PATCH | `/api/chat/chats/:id` | Rename, pin, archive or change feature |
+| DELETE | `/api/chat/chats/:id` | Soft-delete a chat |
+| POST | `/api/chat/message` | Send a chat message (SSE: `chunk`, `done`, `title`, `error`); omitting `conversationId` creates a chat |
+| POST | `/api/chat/memory` | Save a chat-scoped memory from a message |
 | POST | `/api/roundtable/start` | Start a roundtable (SSE response) |
 | GET | `/api/roundtable/:id` | Get roundtable with all turns |
 | POST | `/api/roundtable/:id/terminate` | Manually terminate active roundtable |
@@ -267,3 +272,7 @@ The parser is whitespace-tolerant. Conflicts trigger additional rounds up to the
 - **Plane** (`plane/`) — self-hosted issue tracker, `http://localhost`. Vendored upstream repo (its own git history, not tracked here — see `docs/plane.md`); started/stopped via `docker-compose` from that directory.
 - **Outline** (`outline/`) — self-hosted wiki, `http://localhost:3002` (see `outline/README.md`). Login uses Mailpit as a local SMTP catcher.
 - **Diagram tool** (`diagram-tool/`) — standalone node-graph diagram editor, integrated into the main frontend's Diagrams tab and Context Tray. See `diagram-tool/README.md`.
+
+## License
+
+[MIT](LICENSE)

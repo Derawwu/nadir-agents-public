@@ -40,8 +40,8 @@ cd diagram-tool/frontend
 npm run dev   # http://localhost:5180
 ```
 
-Not currently launched by the root `start.bat` — start it manually when
-you need the editor or want diagrams available to attach in the main app.
+The root `start.bat` launches both. The main app's Diagrams tab needs the
+backend (3010) running; the editor (5180) is only needed to create/edit.
 
 ## Integration with the main app
 
