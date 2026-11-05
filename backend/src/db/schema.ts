@@ -115,6 +115,8 @@ export function runMigrations(): void {
     ['jira_parent_key', 'TEXT'],
     ['jira_status',     'TEXT'],
     ['jira_synced_at',  'TEXT'],
+    // Plane's own UUID for the work item, needed to edit it.
+    ['plane_issue_id',  'TEXT'],
   ];
 
   for (const [col, type] of newCols) {
