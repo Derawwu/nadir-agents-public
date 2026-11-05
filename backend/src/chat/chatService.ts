@@ -289,7 +289,7 @@ export async function sendMessage(params: SendMessageParams): Promise<SendMessag
   }
   // A safety-classifier decline arrives as a normal response with
   // stop_reason "refusal" (after any server-side fallback also declined).
-  if ((finalMessage.stop_reason as string) === 'refusal') {
+  if (finalMessage.stop_reason === 'refusal') {
     const notice = refusalNotice(finalMessage);
     console.warn(`[Chat] Model declined (model: ${model})`);
     const sep = fullResponse ? '\n\n' : '';

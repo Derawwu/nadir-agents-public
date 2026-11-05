@@ -230,14 +230,14 @@ export function getChatSummary(conversationId: number): { summary: string | null
 }
 
 function cacheControl(): TextBlockParam['cache_control'] {
-  // The installed SDK's types predate the ttl field; the API accepts it.
-  return (getCacheTtl() === '1h'
-    ? { type: 'ephemeral', ttl: '1h' }
-    : { type: 'ephemeral' }) as TextBlockParam['cache_control'];
+  return getCacheTtl() === '1h' ? { type: 'ephemeral', ttl: '1h' } : { type: 'ephemeral' };
 }
 
 /** Puts a cache breakpoint on the last block of a message, converting string content to a block. */
 function withCacheBreakpoint(message: MessageParam): MessageParam {
+  // Chat history holds only user and assistant turns; a system message (whose
+  // content can't hold image blocks) is passed through unchanged.
+  if (message.role === 'system') return message;
   const blocks: ContentBlockParam[] =
     typeof message.content === 'string'
       ? [{ type: 'text', text: message.content || ' ' }]

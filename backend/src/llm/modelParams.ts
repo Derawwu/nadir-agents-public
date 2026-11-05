@@ -8,8 +8,8 @@
  *   on a model Anthropic picks for that category, inside the same call.
  *   Haiku 5.5 has no server-side fallback, so it is never sent there.
  *
- * The installed SDK (0.36) predates these fields, so callers spread the
- * result into the request body with a cast.
+ * The SDK types effort but not `fallbacks` (a beta field), so callers spread
+ * the result into the request body with a cast.
  */
 
 import type Anthropic from '@anthropic-ai/sdk';
@@ -60,7 +60,6 @@ export function textOf(message: Anthropic.Message): string {
 
 /** Message shown in place of a reply the model declined. */
 export function refusalNotice(message: Anthropic.Message): string {
-  const details = (message as Anthropic.Message & { stop_details?: { category?: string | null } | null }).stop_details;
-  const category = details?.category ? ` (category: ${details.category})` : '';
+  const category = message.stop_details?.category ? ` (category: ${message.stop_details.category})` : '';
   return `_The model declined to answer this message${category}. Try rephrasing it, or switch this agent to another model._`;
 }

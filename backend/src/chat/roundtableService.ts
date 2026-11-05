@@ -142,7 +142,7 @@ async function streamAgentTurn(
   if (finalMessage.stop_reason === 'max_tokens') {
     console.warn(`[Roundtable] Response truncated by max_tokens limit (model: ${model})`);
   }
-  if ((finalMessage.stop_reason as string) === 'refusal') {
+  if (finalMessage.stop_reason === 'refusal') {
     const notice = refusalNotice(finalMessage);
     const sep = full ? '\n\n' : '';
     full += sep + notice;
