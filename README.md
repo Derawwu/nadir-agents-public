@@ -215,6 +215,7 @@ backend/
       featureService.ts # Feature CRUD
     chat/
       chatService.ts    # Single-agent streaming sessions
+      agentRun.ts       # Tool-use loop: runs reads, pauses for approval of writes, resumes
       roundtableService.ts # Multi-agent orchestration with conflict detection
       chatSummary.ts    # Running chat summary that replaces older history
     llm/
@@ -228,6 +229,11 @@ backend/
       indexer.ts        # Keeps the index in step with messages, Outline and the diagram tool
       search.ts         # BM25 + embedding search, rank fusion, relevance gate
       context.ts        # Turns hits into the prompt's excerpts and the UI's source list
+    tools/
+      types.ts          # Read / write tool definitions (zod schema, run, preview)
+      readTools.ts      # search_knowledge, wiki, diagram and Plane reads
+      writeTools.ts     # Wiki, Plane, diagram and memory writes (approval required)
+      index.ts          # Per-role tool lists, API tool specs, input validation
     diagrams/
       diagramClient.ts  # Thin proxy client to the standalone diagram-tool backend
     outline/
@@ -240,7 +246,7 @@ backend/
     routes/
       agents.ts          # GET /api/agents, GET /api/agents/:id/memories
       features.ts         # GET/POST/PATCH /api/features
-      chat.ts              # POST /api/chat/message (SSE), POST /api/chat/memory
+      chat.ts              # POST /api/chat/message (SSE), /runs/:id/resume (SSE), /memory
       roundtable.ts         # POST /api/roundtable/start (SSE), GET/POST /api/roundtable/:id
       diagrams.ts            # Proxies the standalone diagram-tool app
       outline.ts              # Outline wiki proxy
@@ -268,7 +274,8 @@ backend/
 | GET | `/api/chat/chats/:id` | Chat + messages |
 | PATCH | `/api/chat/chats/:id` | Rename, pin, archive or change feature |
 | DELETE | `/api/chat/chats/:id` | Soft-delete a chat |
-| POST | `/api/chat/message` | Send a chat message (SSE: `chunk`, `done`, `title`, `error`); omitting `conversationId` creates a chat |
+| POST | `/api/chat/message` | Send a chat message (SSE: `sources`, `chunk`, `tool`, `approval`, `retract`, `done`, `title`, `error`); omitting `conversationId` creates a chat |
+| POST | `/api/chat/runs/:id/resume` | Approve or decline a paused reply's actions (`{decisions: {[toolCallId]: 'approve' \| 'reject'}}`) and stream the rest of the reply |
 | POST | `/api/chat/memory` | Save a chat-scoped memory from a message |
 | POST | `/api/roundtable/start` | Start a roundtable (SSE response) |
 | GET | `/api/roundtable/:id` | Get roundtable with all turns |
@@ -525,6 +532,48 @@ Local bot users need email only to sign up. Point Plane's SMTP at the Outline
 stack's Mailpit (`podman network connect plane_default outline-outline-mailpit-1`,
 then host `outline-outline-mailpit-1`, port 1025, no auth) and use any
 `@nadir.test` address.
+
+## Agent tools
+
+In chat, agents can look things up and act on them instead of only talking
+about them. Reads run on their own; anything that changes the wiki, Plane, a
+diagram or memory waits for the user to approve it.
+
+| Reads (run automatically) | Writes (need approval) |
+|---|---|
+| `search_knowledge` — hybrid search over chats, wiki and diagrams | `create_wiki_page`, `update_wiki_page` (append or replace) |
+| `list_wiki_pages`, `read_wiki_page` | `create_plane_issue`, `update_plane_issue`, `comment_on_plane_issue` |
+| `list_diagrams`, `read_diagram` | `add_to_diagram` (nodes and edges, placed below the existing ones) |
+| `list_plane_issues`, `read_plane_issue` | `save_memory` |
+
+The analyst gets the reads and `save_memory` only, matching its read-only
+role in Outline and Plane. Automatic retrieval still runs before each
+reply; `search_knowledge` is there for when the agent needs more.
+
+**How a reply with tools works** (`backend/src/chat/agentRun.ts`)
+
+1. The model streams as usual. Each tool it calls is validated with zod
+   before anything runs; reads run straight away and show up under the
+   reply as one line each ("Read NB-10 …", with a link when there is one).
+2. If a round asks for writes, the run stops and saves its exact request
+   (system prompt, messages and thinking blocks) to `agent_runs`. The chat
+   shows an action card per write, with the fields and text it would send.
+3. Once every card has a decision, `POST /api/chat/runs/:id/resume` runs the
+   approved writes, tells the model which ones were declined, and continues
+   the same reply. Because the saved request is replayed unchanged, the
+   prompt cache still hits (about 95% cached on resume in testing).
+4. A paused reply survives a page reload. Sending a new message instead
+   closes it: its cards are marked *skipped* and the model is told.
+
+Safeguards: tool inputs stream eagerly but are always schema-checked; a
+round whose tool input fails to parse is retried (its streamed text is
+retracted); tools never run after a `max_tokens` or `refusal` stop; the last
+round is made with `tool_choice: none` so a reply always ends in text; tool
+results are capped at 30k characters. Every call is stored in `tool_calls`
+with its input, result, status and duration.
+
+Settings (`backend/.env.example`): `AGENT_TOOLS_ENABLED` (default `true`),
+`AGENT_TOOL_MAX_ROUNDS` (default 6). Roundtables don't use tools yet.
 
 ## Feature Lifecycle
 

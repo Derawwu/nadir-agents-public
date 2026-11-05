@@ -20,12 +20,12 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
 const CACHE_MS = 60 * 60 * 1000;
 
-/** Fields of a Models API entry that the installed SDK (0.36) doesn't type yet. */
+/** The fields of a Models API entry this check reads (Anthropic.ModelInfo fits it). */
 interface ApiModel {
   id: string;
   display_name: string;
   created_at: string;
-  line?: string;
+  line?: string | null;
   lifecycle?: string;
   deprecated_at?: string | null;
   retires_at?: string | null;
@@ -83,7 +83,7 @@ function isActive(m: ApiModel): boolean {
 
 async function listModels(): Promise<ApiModel[]> {
   const out: ApiModel[] = [];
-  for await (const m of anthropic.models.list({ limit: 100 })) out.push(m as unknown as ApiModel);
+  for await (const m of anthropic.models.list({ limit: 100 })) out.push(m);
   return out;
 }
 

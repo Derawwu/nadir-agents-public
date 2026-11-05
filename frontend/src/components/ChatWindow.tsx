@@ -2,9 +2,19 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { MessageBubble } from './MessageBubble';
 import { ContextTrayBar } from './ContextTrayBar';
 import { ContextSources } from './ContextSources';
+import { ToolActivity } from './ToolActivity';
 import { useContextTray } from '../contexts/ContextTrayContext';
-import { sendChatMessage, saveMemory, uploadChatImage } from '../api/client';
-import type { ContextSource, MemoryType, MessageImageRef, PendingImage, StoredMessage } from '../api/client';
+import { resumeRun, sendChatMessage, saveMemory, uploadChatImage } from '../api/client';
+import type {
+  ChatSSEEvent,
+  ContextSource,
+  MemoryType,
+  MessageImageRef,
+  PendingImage,
+  PendingRun,
+  StoredMessage,
+  ToolCall,
+} from '../api/client';
 import { dayKey, formatDayLabel } from '../utils/dateFormat';
 
 interface Message {
@@ -13,9 +23,24 @@ interface Message {
   content: string;
   images?: MessageImageRef[];
   sources?: ContextSource[];
+  /** Tools the agent used for this reply. */
+  toolCalls?: ToolCall[];
+  /** Set while the reply is paused for approval of its actions. */
+  runId?: number | null;
   createdAt: string;
   isStreaming?: boolean;
   isInfo?: boolean;
+}
+
+/** Adds or replaces tool calls by id, keeping their order. */
+function mergeCalls(existing: ToolCall[] | undefined, incoming: ToolCall[]): ToolCall[] {
+  const out = [...(existing ?? [])];
+  for (const call of incoming) {
+    const i = out.findIndex((c) => c.id === call.id);
+    if (i >= 0) out[i] = call;
+    else out.push(call);
+  }
+  return out;
 }
 
 interface Props {
@@ -24,6 +49,8 @@ interface Props {
   featureId: number | null;
   conversationId: number | null;
   initialMessages: StoredMessage[];
+  /** A reply of this chat that is waiting for the user to approve its actions. */
+  initialPendingRun?: PendingRun | null;
   /** Fires after each completed reply with the chat id (new or existing). */
   onConversationCreated: (id: number, slug: string | null) => void;
   /** Fires when the backend auto-titles a new chat (the slug changes with it). */
@@ -39,20 +66,36 @@ export function ChatWindow({
   featureId,
   conversationId,
   initialMessages,
+  initialPendingRun,
   onConversationCreated,
   onTitleGenerated,
   onMemorySaved,
 }: Props) {
-  const [messages, setMessages] = useState<Message[]>(() =>
-    initialMessages.map((m) => ({
+  const [messages, setMessages] = useState<Message[]>(() => {
+    const list: Message[] = initialMessages.map((m) => ({
       id: String(m.id),
       role: m.role,
       content: m.content,
       images: m.images,
       sources: m.contextSources,
+      toolCalls: m.toolCalls,
       createdAt: m.created_at,
-    }))
-  );
+    }));
+    if (initialPendingRun) {
+      list.push({
+        id: `run-${initialPendingRun.runId}`,
+        role: 'assistant',
+        content: initialPendingRun.text,
+        sources: initialPendingRun.sources,
+        toolCalls: initialPendingRun.toolCalls,
+        runId: initialPendingRun.runId,
+        createdAt: new Date().toISOString(),
+      });
+    }
+    return list;
+  });
+  // Decisions on a paused reply's cards, sent once every card has one.
+  const [decisions, setDecisions] = useState<Record<number, 'approve' | 'reject'>>({});
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -231,7 +274,19 @@ export function ChatWindow({
       { id: assistantMsgId, role: 'assistant', content: '', isStreaming: true, createdAt: now() },
     ]);
 
-    let resolvedConvId = activeConvRef.current;
+    // A reply still waiting for approval is closed by the backend when a new
+    // message arrives; show its cards as skipped.
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.runId
+          ? {
+              ...m,
+              runId: null,
+              toolCalls: m.toolCalls?.map((c) => (c.status === 'pending' ? { ...c, status: 'skipped' as const } : c)),
+            }
+          : m
+      )
+    );
 
     cleanupRef.current = sendChatMessage(
       {
@@ -239,44 +294,70 @@ export function ChatWindow({
         featureId,
         message: messageToSend,
         images: imagesToSend.map((img) => ({ filename: img.filename, media_type: img.media_type })),
-        conversationId: resolvedConvId,
+        conversationId: activeConvRef.current,
       },
-      (event) => {
-        if (event.type === 'sources') {
-          setMessages((prev) =>
-            prev.map((m) => (m.id === assistantMsgId ? { ...m, sources: event.sources } : m))
-          );
-        } else if (event.type === 'chunk') {
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantMsgId ? { ...m, content: m.content + event.text } : m
-            )
-          );
-        } else if (event.type === 'done') {
-          resolvedConvId = event.conversationId;
-          activeConvRef.current = event.conversationId;
-          onConversationCreated(event.conversationId, event.slug);
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantMsgId ? { ...m, isStreaming: false } : m
-            )
-          );
-          setSending(false);
-        } else if (event.type === 'title') {
-          onTitleGenerated?.(event.conversationId, event.title, event.slug);
-        } else if (event.type === 'error') {
-          setError(event.error);
-          setMessages((prev) =>
-            prev.map((m) =>
-              m.id === assistantMsgId
-                ? { ...m, isStreaming: false, content: '[Error: ' + event.error + ']' }
-                : m
-            )
-          );
-          setSending(false);
-        }
-      }
+      streamHandler(assistantMsgId)
     );
+  }
+
+  /** Applies stream events (new message or resumed run) to one assistant message. */
+  function streamHandler(assistantMsgId: string): (event: ChatSSEEvent) => void {
+    const update = (fn: (m: Message) => Message) =>
+      setMessages((prev) => prev.map((m) => (m.id === assistantMsgId ? fn(m) : m)));
+
+    return (event) => {
+      if (event.type === 'sources') {
+        update((m) => ({ ...m, sources: event.sources }));
+      } else if (event.type === 'chunk') {
+        update((m) => ({ ...m, content: m.content + event.text }));
+      } else if (event.type === 'retract') {
+        update((m) => ({ ...m, content: m.content.slice(0, Math.max(0, m.content.length - event.chars)) }));
+      } else if (event.type === 'tool') {
+        update((m) => ({ ...m, toolCalls: mergeCalls(m.toolCalls, [event.call]) }));
+      } else if (event.type === 'approval') {
+        update((m) => ({ ...m, runId: event.runId, toolCalls: mergeCalls(m.toolCalls, event.calls) }));
+      } else if (event.type === 'done') {
+        activeConvRef.current = event.conversationId;
+        onConversationCreated(event.conversationId, event.slug);
+        update((m) => ({ ...m, isStreaming: false, runId: event.awaitingRunId }));
+        setSending(false);
+      } else if (event.type === 'title') {
+        onTitleGenerated?.(event.conversationId, event.title, event.slug);
+      } else if (event.type === 'error') {
+        setError(event.error);
+        update((m) => ({
+          ...m,
+          isStreaming: false,
+          content: m.content ? `${m.content}\n\n[Error: ${event.error}]` : `[Error: ${event.error}]`,
+        }));
+        setSending(false);
+      }
+    };
+  }
+
+  /**
+   * Records a decision on an action card. Once every pending card of the
+   * paused reply has one, they go to the backend together and the reply
+   * continues streaming into the same message.
+   */
+  function handleDecide(msg: Message, call: ToolCall, decision: 'approve' | 'reject') {
+    if (!msg.runId || sending) return;
+    const next = { ...decisions, [call.id]: decision };
+    const pending = (msg.toolCalls ?? []).filter((c) => c.status === 'pending');
+    if (!pending.every((c) => next[c.id])) {
+      setDecisions(next);
+      return;
+    }
+    const runDecisions = Object.fromEntries(pending.map((c) => [c.id, next[c.id]!]));
+    setDecisions((prev) => {
+      const rest = { ...prev };
+      for (const c of pending) delete rest[c.id];
+      return rest;
+    });
+    setSending(true);
+    setError(null);
+    setMessages((prev) => prev.map((m) => (m.id === msg.id ? { ...m, isStreaming: true, runId: null } : m)));
+    cleanupRef.current = resumeRun(msg.runId, runDecisions, streamHandler(msg.id));
   }
 
   async function handleSaveMemory(messageContent: string, type: MemoryType): Promise<void> {
@@ -401,8 +482,20 @@ export function ChatWindow({
                     isStreaming={msg.isStreaming}
                     highlight={searchQuery.trim() || undefined}
                     footer={
-                      msg.sources && msg.sources.length > 0 ? (
-                        <ContextSources sources={msg.sources} agentName={agentName} />
+                      (msg.toolCalls && msg.toolCalls.length > 0) || (msg.sources && msg.sources.length > 0) ? (
+                        <>
+                          {msg.toolCalls && msg.toolCalls.length > 0 && (
+                            <ToolActivity
+                              calls={msg.toolCalls}
+                              onDecide={msg.runId ? (call, decision) => handleDecide(msg, call, decision) : undefined}
+                              decided={decisions}
+                              busy={sending}
+                            />
+                          )}
+                          {msg.sources && msg.sources.length > 0 && (
+                            <ContextSources sources={msg.sources} agentName={agentName} />
+                          )}
+                        </>
                       ) : undefined
                     }
                     onSaveMemory={

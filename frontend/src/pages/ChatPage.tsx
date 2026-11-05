@@ -24,7 +24,7 @@ import {
   updateChat,
   deleteChat,
 } from '../api/client';
-import type { Agent, Chat, Feature, StoredMessage } from '../api/client';
+import type { Agent, Chat, Feature, PendingRun, StoredMessage } from '../api/client';
 
 const LS_AGENT_KEY = 'nadir_active_agent_id';
 const lastChatKey = (agentId: number) => `nadir_last_chat_${agentId}`;
@@ -50,6 +50,7 @@ export function ChatPage() {
   const [activeChat, setActiveChatState] = useState<Chat | null>(null);
   const [usageRefresh, setUsageRefresh] = useState(0);
   const [initialMessages, setInitialMessages] = useState<StoredMessage[]>([]);
+  const [initialPendingRun, setInitialPendingRun] = useState<PendingRun | null>(null);
   const [windowKey, setWindowKey] = useState('');
   const [chatLoading, setChatLoading] = useState(false);
   const [draftFeatureId, setDraftFeatureId] = useState<number | null>(null);
@@ -138,6 +139,7 @@ export function ChatPage() {
     if (isDraft) {
       setActiveChat(null);
       setInitialMessages([]);
+      setInitialPendingRun(null);
       setDraftFeatureId(null);
       setWindowKey(`new-${agentId}-${Date.now()}`);
       return;
@@ -165,6 +167,7 @@ export function ChatPage() {
         localStorage.setItem(lastChatKey(agentId), String(detail.chat.id));
         setActiveChat(detail.chat);
         setInitialMessages(detail.messages);
+        setInitialPendingRun(detail.pendingRun ?? null);
         setWindowKey(`chat-${detail.chat.id}`);
       })
       .catch(() => {
@@ -292,6 +295,7 @@ export function ChatPage() {
         featureId={featureId}
         conversationId={activeChat?.id ?? null}
         initialMessages={initialMessages}
+        initialPendingRun={initialPendingRun}
         onConversationCreated={handleConversationCreated}
         onTitleGenerated={handleTitleGenerated}
         onMemorySaved={() => setMemoryRefresh((n) => n + 1)}

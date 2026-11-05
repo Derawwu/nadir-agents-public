@@ -42,3 +42,51 @@ export async function getAgentFormatFromTool(id: number): Promise<string | null>
     return null;
   }
 }
+
+// ─── Graph read / write (used by the add_to_diagram agent tool) ─────────────
+
+export interface DiagramGraphNode {
+  id: string;
+  position: { x: number; y: number };
+  data: { label: string; notes?: string; kind?: string };
+  type?: string;
+}
+
+export interface DiagramGraphEdge {
+  id: string;
+  source: string;
+  target: string;
+  label?: string;
+  data?: { dependency?: boolean };
+}
+
+export interface DiagramGraph {
+  nodes: DiagramGraphNode[];
+  edges: DiagramGraphEdge[];
+}
+
+export interface DiagramDetail extends DiagramSummary {
+  graph: DiagramGraph;
+}
+
+export async function getDiagramFromTool(id: number): Promise<DiagramDetail> {
+  const data = (await fetchFromDiagramTool(`/${id}`)) as { diagram: DiagramSummary & { graph_json: string } };
+  const { graph_json, ...summary } = data.diagram;
+  let graph: DiagramGraph = { nodes: [], edges: [] };
+  try {
+    const parsed = JSON.parse(graph_json) as Partial<DiagramGraph>;
+    graph = { nodes: parsed.nodes ?? [], edges: parsed.edges ?? [] };
+  } catch {
+    // An unparseable graph is treated as empty; the write below replaces it.
+  }
+  return { ...summary, graph };
+}
+
+export async function saveDiagramGraph(id: number, graph: DiagramGraph): Promise<void> {
+  const res = await fetch(`${getBaseUrl()}/api/diagrams/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ graph_json: JSON.stringify(graph) }),
+  });
+  if (!res.ok) throw new Error(`Diagram tool API error ${res.status} saving diagram ${id}: ${await res.text()}`);
+}

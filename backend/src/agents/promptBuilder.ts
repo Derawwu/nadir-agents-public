@@ -13,6 +13,7 @@ import { getFeatureById, type Feature } from '../features/featureService';
 import { getMemoriesForContext, formatMemoriesForPrompt } from './memoryService';
 import { searchDocuments, type AgentRole } from '../outline/outlineService';
 import { retrieveForChat, type ContextSource } from '../retrieval/context';
+import type { ChunkFilter } from '../retrieval/search';
 import { readImageAsBase64, type StoredImage } from '../chat/imageStore';
 import db from '../db/connection';
 import { getCacheTtl, getContextStrategy, type ContextStrategy } from './contextConfig';
@@ -230,14 +231,14 @@ export function getChatSummary(conversationId: number): { summary: string | null
 }
 
 function cacheControl(): TextBlockParam['cache_control'] {
-  // The installed SDK's types predate the ttl field; the API accepts it.
-  return (getCacheTtl() === '1h'
-    ? { type: 'ephemeral', ttl: '1h' }
-    : { type: 'ephemeral' }) as TextBlockParam['cache_control'];
+  return getCacheTtl() === '1h' ? { type: 'ephemeral', ttl: '1h' } : { type: 'ephemeral' };
 }
 
 /** Puts a cache breakpoint on the last block of a message, converting string content to a block. */
-function withCacheBreakpoint(message: MessageParam): MessageParam {
+export function withCacheBreakpoint(message: MessageParam): MessageParam {
+  // Chat history holds only user and assistant turns; a system message (whose
+  // content can't hold image blocks) is passed through unchanged.
+  if (message.role === 'system') return message;
   const blocks: ContentBlockParam[] =
     typeof message.content === 'string'
       ? [{ type: 'text', text: message.content || ' ' }]
@@ -265,6 +266,8 @@ export interface ChatRequest {
   summarized: boolean;
   /** What retrieval added to the new turn (shown under the reply). */
   sources: ContextSource[];
+  /** Which chunks this chat may search (reused by the search_knowledge tool). */
+  retrievalFilter: ChunkFilter;
 }
 
 /**
@@ -298,12 +301,13 @@ export async function buildChatContext(params: {
   // Retrieval: earlier messages (this agent's other chats, and this chat's
   // summarized part), wiki passages and diagrams relevant to the new message.
   const lastAssistant = [...rows].reverse().find((r) => r.role === 'assistant')?.content ?? null;
+  const retrievalFilter: ChunkFilter = {
+    agentId: params.agentId,
+    conversationId: params.conversationId,
+    verbatimAfterMessageId: useSummary ? uptoMessageId : 0,
+  };
   const retrieved = await retrieveForChat({
-    filter: {
-      agentId: params.agentId,
-      conversationId: params.conversationId,
-      verbatimAfterMessageId: useSummary ? uptoMessageId : 0,
-    },
+    filter: retrievalFilter,
     userMessage: params.userMessage,
     lastAssistantMessage: lastAssistant,
   });
@@ -351,6 +355,7 @@ export async function buildChatContext(params: {
     verbatimCount: rows.length,
     summarized: useSummary,
     sources: retrieved.sources,
+    retrievalFilter,
   };
 }
 

@@ -10,10 +10,15 @@
  * GET    /api/chat/chats/:id      — chat metadata + messages
  * PATCH  /api/chat/chats/:id      — rename / pin / archive / change feature
  * DELETE /api/chat/chats/:id      — soft-deletes a chat
+ * POST   /api/chat/runs/:id/resume — approve/decline a paused reply's actions, streams the rest (SSE)
  *
  * SSE format: each event is `data: <json>\n\n`
  * Event types:
- *   { type: 'chunk', text } | { type: 'done', conversationId, slug }
+ *   { type: 'chunk', text } | { type: 'sources', sources }
+ *   | { type: 'tool', call }                 — a tool call finished, failed or was decided
+ *   | { type: 'approval', runId, calls }     — the reply paused; these writes need a decision
+ *   | { type: 'retract', chars }             — drop the last chars of streamed text (round retried)
+ *   | { type: 'done', conversationId, slug, awaitingRunId }
  *   | { type: 'title', conversationId, title, slug } | { type: 'error', error }
  */
 
@@ -28,12 +33,35 @@ import {
   updateChat,
   deleteChat,
   getChatMessages,
+  getChatPendingRun,
   generateChatTitle,
+  resumeReply,
 } from '../chat/chatService';
+import type { RunIO } from '../chat/agentRun';
 import { saveImageFromDataUrl } from '../chat/imageStore';
 import { MEMORY_TYPES, type MemoryType } from '../agents/memoryService';
 
 const router = Router();
+
+/** Opens an SSE response and returns a writer for its events. */
+function openSse(res: Response): (event: Record<string, unknown>) => void {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering if behind a proxy.
+  res.flushHeaders();
+  return (event) => res.write(`data: ${JSON.stringify(event)}\n\n`);
+}
+
+/** Stream callbacks shared by new messages and resumed runs. */
+function runEvents(send: (event: Record<string, unknown>) => void): RunIO {
+  return {
+    onChunk: (text) => send({ type: 'chunk', text }),
+    onTool: (call) => send({ type: 'tool', call }),
+    onApproval: (runId, calls) => send({ type: 'approval', runId, calls }),
+    onRetract: (chars) => send({ type: 'retract', chars }),
+  };
+}
 
 function parseId(raw: unknown): number | null {
   if (typeof raw !== 'string' && typeof raw !== 'number') return null;
@@ -91,7 +119,7 @@ router.get('/chats/by-slug', (req: Request, res: Response) => {
     res.status(404).json({ error: 'Chat not found' });
     return;
   }
-  res.json({ chat, messages: getChatMessages(chat.id) });
+  res.json({ chat, messages: getChatMessages(chat.id), pendingRun: getChatPendingRun(chat.id) });
 });
 
 router.get('/chats/:id', (req: Request, res: Response) => {
@@ -101,7 +129,7 @@ router.get('/chats/:id', (req: Request, res: Response) => {
     res.status(404).json({ error: 'Chat not found' });
     return;
   }
-  res.json({ chat, messages: getChatMessages(chat.id) });
+  res.json({ chat, messages: getChatMessages(chat.id), pendingRun: getChatPendingRun(chat.id) });
 });
 
 router.patch('/chats/:id', (req: Request, res: Response) => {
@@ -151,12 +179,7 @@ router.post('/message', async (req: Request, res: Response) => {
     return;
   }
 
-  // Set SSE headers before any streaming begins.
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering if behind a proxy.
-  res.flushHeaders();
+  const send = openSse(res);
 
   try {
     const result = await sendMessage({
@@ -165,36 +188,60 @@ router.post('/message', async (req: Request, res: Response) => {
       message: message ?? '',
       images,
       conversationId: conversationId ?? null,
-      onChunk: (chunk) => {
-        res.write(`data: ${JSON.stringify({ type: 'chunk', text: chunk })}\n\n`);
-      },
+      ...runEvents(send),
       onSources: (sources) => {
-        if (sources.length > 0) res.write(`data: ${JSON.stringify({ type: 'sources', sources })}\n\n`);
+        if (sources.length > 0) send({ type: 'sources', sources });
       },
     });
 
     const chat = getChat(result.conversationId);
-    res.write(
-      `data: ${JSON.stringify({ type: 'done', conversationId: result.conversationId, slug: chat?.slug ?? null })}\n\n`
-    );
+    send({
+      type: 'done',
+      conversationId: result.conversationId,
+      slug: chat?.slug ?? null,
+      awaitingRunId: result.awaitingRunId,
+    });
 
     // Auto-title after 'done' so the reply is never held up by it.
     if (result.needsTitle) {
       const titled = await generateChatTitle(result.conversationId, message ?? '', result.fullResponse);
-      if (titled) {
-        res.write(
-          `data: ${JSON.stringify({
-            type: 'title',
-            conversationId: titled.id,
-            title: titled.title,
-            slug: titled.slug,
-          })}\n\n`
-        );
-      }
+      if (titled) send({ type: 'title', conversationId: titled.id, title: titled.title, slug: titled.slug });
     }
   } catch (err) {
-    const errMessage = err instanceof Error ? err.message : 'Unknown error';
-    res.write(`data: ${JSON.stringify({ type: 'error', error: errMessage })}\n\n`);
+    send({ type: 'error', error: err instanceof Error ? err.message : 'Unknown error' });
+  } finally {
+    res.end();
+  }
+});
+
+// POST /api/chat/runs/:id/resume
+// Body: { decisions: { [toolCallId]: 'approve' | 'reject' } }, one per pending action.
+// Runs the approved writes, tells the agent about declined ones, and streams the rest of the reply.
+router.post('/runs/:id/resume', async (req: Request, res: Response) => {
+  const runId = parseId(req.params.id);
+  const raw = (req.body as { decisions?: unknown }).decisions;
+  if (!runId || !raw || typeof raw !== 'object') {
+    res.status(400).json({ error: 'run id and decisions are required' });
+    return;
+  }
+  const decisions: Record<number, boolean> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    const callId = parseId(key);
+    if (!callId || (value !== 'approve' && value !== 'reject')) {
+      res.status(400).json({ error: "decisions must map tool call ids to 'approve' or 'reject'" });
+      return;
+    }
+    decisions[callId] = value === 'approve';
+  }
+
+  const send = openSse(res);
+  try {
+    const result = await resumeReply(runId, decisions, runEvents(send));
+    const chat = getChat(result.conversationId);
+    send({ type: 'done', conversationId: result.conversationId, slug: chat?.slug ?? null, awaitingRunId: result.awaitingRunId });
+  } catch (err) {
+    const error = err instanceof Error ? err.message : 'Unknown error';
+    send({ type: 'error', error });
   } finally {
     res.end();
   }
