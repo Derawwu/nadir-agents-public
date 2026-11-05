@@ -43,6 +43,7 @@ and how to refresh it.
 - **Backend**: Node.js 22+, TypeScript, Express, `node:sqlite` (built-in)
 - **Frontend**: React 18, Vite, Tailwind CSS
 - **AI**: Anthropic SDK: Sonnet 5.5, Opus 5.5 and Haiku 5.5, picked per agent (see [Models](#models))
+- **Retrieval**: local embeddings through [Ollama](https://ollama.com) (`qwen3-embedding:0.6b`) plus SQLite FTS5 keyword search (see [Retrieval](#retrieval))
 
 > **Note**: Uses Node's built-in `node:sqlite` module (requires Node 22.5+). No native compilation needed — this machine has no VS Build Tools, so avoid adding any dependency that needs native compilation (e.g. `better-sqlite3`).
 
@@ -53,6 +54,7 @@ and how to refresh it.
 - Node.js 22.5 or higher (Node 24 recommended)
 - npm 9+
 - Anthropic API key
+- [Ollama](https://ollama.com) with `ollama pull qwen3-embedding:0.6b` (optional: without it, retrieval falls back to keyword search)
 - Docker/Podman (for Plane and Outline)
 
 ### 1. Environment
@@ -134,6 +136,7 @@ Frontend starts at `http://localhost:5173`.
 - Save any agent response as a typed memory (decision / lore / technical / visual / flag / conflict)
 - Memory panel on the right shows the agent's current memory for the selected feature
 - Attach context (features, diagrams, etc.) via the Context Tray before sending
+- "Context: 2 earlier messages · 1 wiki excerpt · 1 diagram" under a reply lists what retrieval added to its request, with links to each source
 
 ### Roundtable Page (`/roundtable`)
 
@@ -218,6 +221,13 @@ backend/
       pricing.ts        # Per-model prices; cost computed when a call is logged
       usageLog.ts       # Writes every Claude call to llm_calls
       usageService.ts   # Queries for the Usage tab and chat badge
+      modelStatus.ts    # Compares configured models with the Models API
+    retrieval/
+      chunker.ts        # Splits messages, wiki pages and diagrams into ~400-token chunks
+      embeddings.ts     # Ollama embedding client (local)
+      indexer.ts        # Keeps the index in step with messages, Outline and the diagram tool
+      search.ts         # BM25 + embedding search, rank fusion, relevance gate
+      context.ts        # Turns hits into the prompt's excerpts and the UI's source list
     diagrams/
       diagramClient.ts  # Thin proxy client to the standalone diagram-tool backend
     outline/
@@ -237,6 +247,7 @@ backend/
       dataExport.ts               # POST /api/data-export/run, GET /api/data-export/status
       usage.ts                    # GET /api/usage/summary, GET /api/usage/chats/:id
       models.ts                   # GET /api/models/status
+      retrieval.ts                # GET /api/retrieval/status, /search; POST /api/retrieval/reindex, /rebuild
     index.ts            # Express entry point
 ```
 
@@ -265,6 +276,10 @@ backend/
 | GET | `/api/diagrams/:id/agent-format` | Get a diagram's machine-readable text (proxied from diagram-tool) |
 | GET | `/api/usage/summary` | Usage totals and breakdowns (query: `days` = number or `all`, `kind`) |
 | GET | `/api/usage/chats/:id` | One chat's total cost and its last request's tokens and cache hit rate |
+| GET | `/api/retrieval/status` | Retrieval index size, embedding model and the last full rebuild's progress |
+| POST | `/api/retrieval/rebuild` | Re-chunk and re-embed everything in the background (202; 409 if one is running) |
+| GET | `/api/retrieval/search` | Debug search over the whole index (query: `q`, `mode` = `hybrid` / `bm25` / `vector`, `limit`) |
+| POST | `/api/retrieval/reindex` | Index new messages and re-sync changed wiki pages and diagrams now |
 | GET | `/api/models/status` | Whether each configured model is current, deprecated, or has a newer model in its family (cached 1h; `refresh=1` to bypass) |
 | POST | `/api/data-export/run` | Start a data snapshot (202 if started, 409 with current status if one's already running) |
 | GET | `/api/data-export/status` | Poll the current/last snapshot job status |
@@ -319,9 +334,10 @@ read 27,041 tokens from cache and paid full price for 2,076.
   it did before ($0.072 vs $0.217 on the Narrator chat). `CACHE_TTL=1h` keeps
   the cache longer, but writes cost 2×. The Usage tab's cache hit rate shows
   which suits how you work.
-- **Summaries lose detail.** Exact wording older than the window is gone.
-  The summary prompt keeps names, numbers and decisions verbatim. Retrieval
-  over old messages is the next step, so precise recall comes back.
+- **Summaries lose detail.** Exact wording older than the window is gone
+  from the history. The summary prompt keeps names, numbers and decisions
+  verbatim, and [retrieval](#retrieval) brings back the original messages
+  when a new one is about them.
 - **Token estimates are approximate** (characters ÷ 4). They are only used to
   size the window, and they run low for code-heavy text and the Opus 4.7+
   tokenizer, which is why the Architect chat's window is above 20k.
@@ -359,6 +375,127 @@ Each agent's model is set in `backend/.env`, and so is how hard it thinks:
   session, and the backend caches the model list for an hour.
 Add `--summarize` to build missing summaries first, which calls the summary
 model.
+
+## Retrieval
+
+Each chat message is searched against an index of older messages, the
+Outline wiki and the diagram tool, and the most relevant excerpts go into
+the request's `<context>` block.
+
+Before this:
+- **Wiki:** Outline was searched by the feature's name, so every message got
+  the same three pages.
+- **Memories:** the newest 20 went in, relevant or not.
+- **Old messages:** anything outside the history window was only in the
+  summary.
+- **Diagrams:** only reached the agent when you added one to the Context
+  Tray by hand. That still works and sends the full diagram.
+
+Memories are still added in full. There are few of them and the user saves
+each one on purpose, so filtering them would only lose information.
+
+**How it works** (`backend/src/retrieval/`)
+1. **Indexing.** Messages, wiki pages and diagrams are split into ~400-token
+   chunks.
+   - **Diagrams** are indexed from the diagram tool's agent format: name,
+     description, nodes with their notes, and dependencies. The Mermaid
+     block and generated node ids are dropped, since they only repeat the
+     listing.
+   - **Keyword index:** each chunk goes into an FTS5 index at once.
+   - **Embeddings:** each chunk is embedded in the background by a local
+     model (`qwen3-embedding:0.6b` through Ollama). If Ollama is down,
+     keyword search still works.
+   - **When:** new messages after every reply; changed wiki pages and
+     diagrams every 10 minutes. Outline or the diagram tool being down
+     doesn't stop the other.
+2. **Search.** The new message is run through both:
+   - **BM25 keyword search** catches exact names and terms.
+   - **Embedding search** catches the same idea in other words.
+
+   The two rankings are merged with reciprocal rank fusion, so their scores
+   never need calibrating against each other. The vectors are compared by
+   brute force in memory: a few thousand chunks take about 7 ms, so a vector
+   database would add nothing.
+3. **Selection.** A chunk goes into the prompt only if it's similar enough to
+   the message (cosine ≥ 0.55, or ≥ 0.45 for a top-3 keyword match), up to 8
+   chunks and about 3k tokens.
+4. **What's skipped.**
+   - Messages already in the verbatim history.
+   - Other agents' chats.
+   - Deleted chats.
+5. **Short follow-ups.** For "go on" and other messages of four words or
+   fewer, the end of the previous reply is searched with them.
+
+**Why local embeddings.** Claude has no embeddings endpoint. A local model
+is free, needs no extra API key and keeps chat history on the machine. It
+runs through Ollama's HTTP API, so the backend gains no native dependency.
+
+**Evaluated** with `backend/scripts/eval-retrieval.ts`, on 48 questions
+(30 about chat messages, 18 about wiki pages; there were no diagrams yet,
+and once there are, the eval samples them too). Claude Haiku wrote one
+question per sampled chunk, then 20 off-topic messages such as recipes,
+meeting replies or "tabs or spaces?". A question counts as found when a
+chunk from the same message or page is returned. There are two sets of
+questions over the same chunks:
+- **Natural:** worded freely. These tend to reuse the passage's words, which
+  flatters keyword search.
+- **Paraphrased:** the passage's distinctive words are banned (names
+  excepted).
+
+| Questions | Search | Recall@1 | Recall@5 | MRR@10 |
+|---|---|---|---|---|
+| Natural | Keyword (BM25) | 52% | 94% | 0.70 |
+| | Embeddings | 50% | 79% | 0.60 |
+| | Hybrid | 46% | 85% | 0.63 |
+| Paraphrased | Keyword (BM25) | 42% | 94% | 0.60 |
+| | Embeddings | 38% | 65% | 0.49 |
+| | Hybrid | **48%** | 90% | **0.64** |
+
+The threshold was picked from a sweep of what actually reaches the prompt:
+
+| Min similarity | Passage reaches the prompt (natural / paraphrased) | Off-topic messages that get any excerpt |
+|---|---|---|
+| 0.45 | 90% / 98% | 27% / 10% |
+| 0.55 (default) | 90% / 90% | 9% / 5% |
+| 0.65 | 85% / 60% | 0% / 0% |
+
+What the numbers say:
+- **Keyword search is strong here.** The corpus is full of distinctive names
+  (gods, places, mechanics), and even paraphrased questions keep them.
+- **Hybrid ranks best when the wording changes.** On paraphrased questions it
+  has the best top-1 hit rate and MRR. Keyword search still finds a few
+  more in the top 5, and embeddings alone fall off.
+- **Embeddings mostly act as the relevance check.** Keyword search matches
+  any shared word, so on its own it can't tell what is worth putting in
+  the prompt.
+- **Weighting the two rankings differently in fusion** changed results by one
+  question at most, so the setting isn't exposed.
+
+**First eval run.** It scored only 47% on chat questions. The cause was a bug
+in the eval, not in search: Haiku returned the questions as a plain list,
+and one skipped item shifted every later question onto the wrong passage.
+Questions are now matched by the index each one echoes back.
+
+**Cost.** Embedding and searching take about 30 ms per message. The excerpts
+add up to ~3k uncached input tokens, about $0.006 per reply on Sonnet 5.5.
+Generating the eval sets cost under $0.01.
+
+**Reindex button** (top nav). The index normally only picks up new and
+changed items. Reindex rebuilds all of it: every message, wiki page and
+diagram is re-chunked and every chunk re-embedded, about 15 s for ~640
+chunks, with progress shown on the button. Use it after changing chunking
+or when results look stale. While it runs, search falls back to keywords.
+
+Settings (`backend/.env.example`): `RETRIEVAL_ENABLED`, `EMBEDDING_MODEL`,
+`OLLAMA_BASE_URL`, `RETRIEVAL_TOKEN_BUDGET`, `RETRIEVAL_MAX_CHUNKS`,
+`RETRIEVAL_MIN_SIMILARITY`. Changing `EMBEDDING_MODEL` re-embeds the index
+automatically.
+
+```bash
+cd backend
+npx tsx scripts/eval-retrieval.ts --generate 60   # writes data/eval/ (gitignored: it quotes chats)
+npx tsx scripts/eval-retrieval.ts
+```
 
 ## Feature Lifecycle
 

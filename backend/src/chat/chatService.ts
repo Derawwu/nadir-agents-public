@@ -18,6 +18,8 @@ import type { StoredImage } from './imageStore';
 import { slugifyTitle } from './slug';
 import { maybeUpdateSummary } from './chatSummary';
 import { recordCall } from '../llm/usageLog';
+import { indexNewMessages } from '../retrieval/indexer';
+import type { ContextSource } from '../retrieval/context';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -192,6 +194,8 @@ export interface SendMessageParams {
   /** Existing chat to post into; null/undefined creates a new chat. */
   conversationId?: number | null;
   onChunk: (chunk: string) => void;
+  /** Called once, before streaming starts, with what retrieval added to the request. */
+  onSources?: (sources: ContextSource[]) => void;
 }
 
 export interface SendMessageResult {
@@ -220,7 +224,7 @@ export async function sendMessage(params: SendMessageParams): Promise<SendMessag
 
   const agentRole = normalizeAgentRole(agent.role);
 
-  const { system, messages, strategy } = await buildChatContext({
+  const { system, messages, strategy, sources } = await buildChatContext({
     agentSystemPrompt: agent.system_prompt,
     agentId: params.agentId,
     agentRole,
@@ -229,6 +233,8 @@ export async function sendMessage(params: SendMessageParams): Promise<SendMessag
     userMessage: params.message,
     userImages: params.images,
   });
+
+  params.onSources?.(sources);
 
   // Persist user message before the API call so it's recorded even if streaming fails.
   db.prepare('INSERT INTO messages (conversation_id, role, content, images) VALUES (?, ?, ?, ?)').run(
@@ -292,12 +298,16 @@ export async function sendMessage(params: SendMessageParams): Promise<SendMessag
   }
 
   // Persist complete assistant response after streaming finishes.
-  db.prepare('INSERT INTO messages (conversation_id, role, content) VALUES (?, ?, ?)').run(
+  db.prepare('INSERT INTO messages (conversation_id, role, content, context_sources) VALUES (?, ?, ?, ?)').run(
     conversationId,
     'assistant',
-    fullResponse
+    fullResponse,
+    sources.length > 0 ? JSON.stringify(sources) : null
   );
   touchChat(conversationId);
+
+  // Add both new messages to the retrieval index (background).
+  void indexNewMessages();
 
   // Fold old turns into the running summary in the background, so it is
   // ready for the next message. Never awaited: the reply is already done.
@@ -363,6 +373,7 @@ interface MessageRow {
   role: 'user' | 'assistant';
   content: string;
   images: string | null;
+  context_sources: string | null;
   created_at: string;
 }
 
@@ -376,6 +387,7 @@ export interface HistoryMessage {
   role: 'user' | 'assistant';
   content: string;
   images?: MessageImageRef[];
+  contextSources?: ContextSource[];
   created_at: string;
 }
 
@@ -383,7 +395,7 @@ export interface HistoryMessage {
 export function getChatMessages(chatId: number): HistoryMessage[] {
   const rows = db
     .prepare(
-      `SELECT id, role, content, images, created_at FROM messages
+      `SELECT id, role, content, images, context_sources, created_at FROM messages
        WHERE conversation_id = ?
        ORDER BY created_at ASC, id ASC`
     )
@@ -400,6 +412,7 @@ export function getChatMessages(chatId: number): HistoryMessage[] {
           media_type: img.media_type,
         }))
       : undefined,
+    contextSources: row.context_sources ? (JSON.parse(row.context_sources) as ContextSource[]) : undefined,
   }));
 }
 

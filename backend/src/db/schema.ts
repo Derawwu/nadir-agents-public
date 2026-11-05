@@ -9,6 +9,29 @@
 import db from './connection';
 import { slugifyTitle } from '../chat/slug';
 
+/** Retrieval index table: one row per chunk of a message, wiki page or diagram. */
+const RETRIEVAL_CHUNKS_SQL = `
+  CREATE TABLE IF NOT EXISTS retrieval_chunks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    source_type TEXT NOT NULL CHECK(source_type IN ('message', 'wiki', 'diagram')),
+    source_id TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL,
+    source_version TEXT,
+    agent_id INTEGER,
+    conversation_id INTEGER,
+    message_id INTEGER,
+    role TEXT,
+    title TEXT,
+    url TEXT,
+    text TEXT NOT NULL,
+    embedding BLOB,
+    embedding_model TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(source_type, source_id, chunk_index)
+  );
+  CREATE INDEX IF NOT EXISTS idx_retrieval_chunks_agent ON retrieval_chunks(source_type, agent_id);
+`;
+
 export function runMigrations(): void {
   db.exec(`
     CREATE TABLE IF NOT EXISTS agents (
@@ -243,5 +266,23 @@ export function runMigrations(): void {
   if (!convCols2.has('summary')) {
     db.exec('ALTER TABLE conversations ADD COLUMN summary TEXT');
     db.exec('ALTER TABLE conversations ADD COLUMN summary_upto_message_id INTEGER');
+  }
+
+  // ── Migration: retrieval index (see src/retrieval/) ───────────────────────
+  // One row per chunk of a chat message, wiki page or diagram. embedding is a
+  // Float32Array blob; NULL until the indexer has embedded it, so keyword
+  // search works even while Ollama is down. retrieval_fts mirrors text and
+  // title for BM25 keyword search, keyed by chunk id (rowid).
+  db.exec(`
+    ${RETRIEVAL_CHUNKS_SQL}
+    CREATE VIRTUAL TABLE IF NOT EXISTS retrieval_fts USING fts5(text, title, tokenize = 'porter unicode61');
+  `);
+
+  // ── Migration: what retrieval added to each reply's request ─────────────
+  const msgCols = new Set(
+    (db.prepare('PRAGMA table_info(messages)').all() as unknown as ColRow[]).map((r) => r.name)
+  );
+  if (!msgCols.has('context_sources')) {
+    db.exec('ALTER TABLE messages ADD COLUMN context_sources TEXT');
   }
 }

@@ -44,6 +44,7 @@ export type MemoryType = 'decision' | 'lore' | 'technical' | 'visual' | 'flag' |
 
 export type ChatSSEEvent =
   | { type: 'chunk'; text: string }
+  | { type: 'sources'; sources: ContextSource[] }
   | { type: 'done'; conversationId: number; slug: string | null }
   | { type: 'title'; conversationId: number; title: string; slug: string }
   | { type: 'error'; error: string };
@@ -130,11 +131,27 @@ export interface MessageImageRef {
   media_type: string;
 }
 
+/** An excerpt retrieval added to the request that produced a reply. */
+export interface ContextSource {
+  type: 'message' | 'wiki' | 'diagram';
+  title: string | null;
+  url: string | null;
+  conversationId: number | null;
+  chatSlug: string | null;
+  messageId: number | null;
+  role: string | null;
+  createdAt: string;
+  snippet: string;
+  similarity: number | null;
+  keywordMatch: boolean;
+}
+
 export interface StoredMessage {
   id: number;
   role: 'user' | 'assistant';
   content: string;
   images?: MessageImageRef[];
+  contextSources?: ContextSource[];
   created_at: string;
 }
 
@@ -623,7 +640,7 @@ export async function fetchDataExportStatus(): Promise<DataExportJobState> {
 
 // ─── Usage ───────────────────────────────────────────────────────────────────
 
-export type UsageKind = 'chat' | 'roundtable_turn' | 'roundtable_summary' | 'title' | 'chat_summary';
+export type UsageKind = 'chat' | 'roundtable_turn' | 'roundtable_summary' | 'title' | 'chat_summary' | 'eval';
 
 export interface UsageTotals {
   calls: number;
@@ -709,4 +726,37 @@ export async function fetchModelStatus(): Promise<ModelStatus> {
   const res = await fetch(`${BASE}/models/status`);
   if (!res.ok) throw new Error(`Failed to check models: ${res.status}`);
   return res.json() as Promise<ModelStatus>;
+}
+
+// ─── Retrieval index ─────────────────────────────────────────────────────────
+
+export interface RetrievalRebuildJob {
+  status: 'idle' | 'running' | 'success' | 'error';
+  message: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  embedded: number;
+  toEmbed: number;
+}
+
+export interface RetrievalStatus {
+  messageChunks: number;
+  wikiChunks: number;
+  diagramChunks: number;
+  embedded: number;
+  model: string;
+  rebuild: RetrievalRebuildJob;
+}
+
+export async function fetchRetrievalStatus(): Promise<RetrievalStatus> {
+  const res = await fetch(`${BASE}/retrieval/status`);
+  if (!res.ok) throw new Error(`fetchRetrievalStatus failed: ${res.status}`);
+  return res.json() as Promise<RetrievalStatus>;
+}
+
+/** Starts a full rebuild; resolves with the job (already running → the running job). */
+export async function startRetrievalRebuild(): Promise<RetrievalRebuildJob> {
+  const res = await fetch(`${BASE}/retrieval/rebuild`, { method: 'POST' });
+  if (!res.ok && res.status !== 409) throw new Error(`startRetrievalRebuild failed: ${res.status}`);
+  return res.json() as Promise<RetrievalRebuildJob>;
 }

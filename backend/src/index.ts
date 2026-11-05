@@ -24,6 +24,8 @@ import diagramsRouter from './routes/diagrams';
 import dataExportRouter from './routes/dataExport';
 import usageRouter from './routes/usage';
 import modelsRouter from './routes/models';
+import retrievalRouter from './routes/retrieval';
+import { startRetrievalIndexer } from './retrieval/indexer';
 import { getUploadsDir } from './chat/imageStore';
 
 dotenv.config();
@@ -69,8 +71,10 @@ app.use('/api/diagrams', diagramsRouter);
 app.use('/api/data-export', dataExportRouter);
 app.use('/api/usage', usageRouter);
 app.use('/api/models', modelsRouter);
+app.use('/api/retrieval', retrievalRouter);
 app.use('/uploads', express.static(getUploadsDir()));
 
 app.listen(PORT, () => {
   console.log(`Nadir agents backend running on http://localhost:${PORT}`);
+  startRetrievalIndexer();
 });

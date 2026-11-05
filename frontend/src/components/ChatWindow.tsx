@@ -1,9 +1,10 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { MessageBubble } from './MessageBubble';
 import { ContextTrayBar } from './ContextTrayBar';
+import { ContextSources } from './ContextSources';
 import { useContextTray } from '../contexts/ContextTrayContext';
 import { sendChatMessage, saveMemory, uploadChatImage } from '../api/client';
-import type { MemoryType, MessageImageRef, PendingImage, StoredMessage } from '../api/client';
+import type { ContextSource, MemoryType, MessageImageRef, PendingImage, StoredMessage } from '../api/client';
 import { dayKey, formatDayLabel } from '../utils/dateFormat';
 
 interface Message {
@@ -11,6 +12,7 @@ interface Message {
   role: 'user' | 'assistant';
   content: string;
   images?: MessageImageRef[];
+  sources?: ContextSource[];
   createdAt: string;
   isStreaming?: boolean;
   isInfo?: boolean;
@@ -47,6 +49,7 @@ export function ChatWindow({
       role: m.role,
       content: m.content,
       images: m.images,
+      sources: m.contextSources,
       createdAt: m.created_at,
     }))
   );
@@ -239,7 +242,11 @@ export function ChatWindow({
         conversationId: resolvedConvId,
       },
       (event) => {
-        if (event.type === 'chunk') {
+        if (event.type === 'sources') {
+          setMessages((prev) =>
+            prev.map((m) => (m.id === assistantMsgId ? { ...m, sources: event.sources } : m))
+          );
+        } else if (event.type === 'chunk') {
           setMessages((prev) =>
             prev.map((m) =>
               m.id === assistantMsgId ? { ...m, content: m.content + event.text } : m
@@ -393,6 +400,11 @@ export function ChatWindow({
                     agentName={msg.role === 'assistant' ? (agentName ?? undefined) : undefined}
                     isStreaming={msg.isStreaming}
                     highlight={searchQuery.trim() || undefined}
+                    footer={
+                      msg.sources && msg.sources.length > 0 ? (
+                        <ContextSources sources={msg.sources} agentName={agentName} />
+                      ) : undefined
+                    }
                     onSaveMemory={
                       msg.role === 'assistant'
                         ? (type, content) => handleSaveMemory(content, type)

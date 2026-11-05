@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import type { MemoryType, MessageImageRef } from '../api/client';
 import { formatMessageTime } from '../utils/dateFormat';
 import { CopyButton } from './CopyButton';
@@ -16,6 +16,8 @@ interface Props {
   isStreaming?: boolean;
   /** Case-insensitive search term to highlight within the message content. */
   highlight?: string;
+  /** Extra content under the message (e.g. retrieval sources). */
+  footer?: ReactNode;
 }
 
 function renderHighlighted(content: string, highlight?: string) {
@@ -42,6 +44,7 @@ export function MessageBubble({
   onSaveMemory,
   isStreaming,
   highlight,
+  footer,
 }: Props) {
   const [memoryType, setMemoryType] = useState<MemoryType>('decision');
   const [saving, setSaving] = useState(false);
@@ -98,6 +101,8 @@ export function MessageBubble({
           <span className="text-[11px] text-gray-500">{formatMessageTime(createdAt)}</span>
           {!isStreaming && <CopyButton content={content} />}
         </div>
+
+        {footer}
 
         {!isUser && !isStreaming && onSaveMemory && (
           <div className="flex items-center gap-2 mt-1.5 ml-1">
