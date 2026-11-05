@@ -168,6 +168,9 @@ router.post('/message', async (req: Request, res: Response) => {
       onChunk: (chunk) => {
         res.write(`data: ${JSON.stringify({ type: 'chunk', text: chunk })}\n\n`);
       },
+      onSources: (sources) => {
+        if (sources.length > 0) res.write(`data: ${JSON.stringify({ type: 'sources', sources })}\n\n`);
+      },
     });
 
     const chat = getChat(result.conversationId);

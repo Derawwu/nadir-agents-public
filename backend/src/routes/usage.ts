@@ -4,7 +4,7 @@ import type { CallKind } from '../llm/usageLog';
 
 const router = Router();
 
-const KINDS: CallKind[] = ['chat', 'roundtable_turn', 'roundtable_summary', 'title', 'chat_summary'];
+const KINDS: CallKind[] = ['chat', 'roundtable_turn', 'roundtable_summary', 'title', 'chat_summary', 'eval'];
 
 /**
  * GET /api/usage/summary?days=30&kind=chat

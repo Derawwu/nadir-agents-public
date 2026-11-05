@@ -41,3 +41,6 @@ Thumbs.db
 
 # Wiki seeding script with private, game-specific content (kept local only).
 /scripts/seed-outline.js
+
+# Retrieval eval sets: generated from private chats and wiki pages.
+**/data/eval/

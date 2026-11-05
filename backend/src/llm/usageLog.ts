@@ -12,7 +12,7 @@ import type Anthropic from '@anthropic-ai/sdk';
 import db from '../db/connection';
 import { computeCost, normalizeModelId, type TokenUsage } from './pricing';
 
-export type CallKind = 'chat' | 'roundtable_turn' | 'roundtable_summary' | 'title' | 'chat_summary';
+export type CallKind = 'chat' | 'roundtable_turn' | 'roundtable_summary' | 'title' | 'chat_summary' | 'eval';
 
 export interface CallMeta {
   kind: CallKind;

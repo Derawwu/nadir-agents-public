@@ -28,6 +28,7 @@ const KIND_LABELS: Record<UsageKind, string> = {
   roundtable_summary: 'Roundtable summaries',
   title: 'Chat titles',
   chat_summary: 'Chat summaries',
+  eval: 'Evals',
 };
 
 export function formatUsd(n: number | null | undefined): string {

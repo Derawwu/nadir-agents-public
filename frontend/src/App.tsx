@@ -6,6 +6,7 @@ import { PlaneTab } from './components/PlaneTab';
 import { DiagramsTab } from './components/DiagramsTab';
 import { UsagePage } from './pages/UsagePage';
 import { ExportDataButton } from './components/ExportDataButton';
+import { ReindexButton } from './components/ReindexButton';
 import { ModelUpdateBanner } from './components/ModelUpdateBanner';
 import { ContextTrayProvider } from './contexts/ContextTrayContext';
 
@@ -86,7 +87,8 @@ export default function App() {
               Usage
             </NavLink>
 
-            <div className="ml-auto">
+            <div className="ml-auto flex items-center gap-2">
+              <ReindexButton />
               <ExportDataButton />
             </div>
           </nav>
