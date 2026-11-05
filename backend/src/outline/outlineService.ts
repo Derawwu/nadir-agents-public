@@ -214,7 +214,7 @@ export async function saveRoundtableSummary(params: {
   conflicts: string[];
   actionItems: Record<string, string[]>;
   agentRoles: AgentRole[];
-}): Promise<void> {
+}): Promise<OutlineDocument> {
   const collectionId = await getOrCreateCollection('narrator', 'Roundtable Summaries');
   const date = new Date().toISOString().split('T')[0] as string;
   const title = `[ROUNDTABLE] ${params.featureName} — ${params.topic} (${date})`;
@@ -253,7 +253,7 @@ export async function saveRoundtableSummary(params: {
     actionItemsSection,
   ].join('\n');
 
-  await createDocument({
+  return createDocument({
     role: 'narrator',
     title,
     text,

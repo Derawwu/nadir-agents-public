@@ -29,6 +29,7 @@ import { buildRoundtableContext } from '../agents/promptBuilder';
 import { saveMemory } from '../agents/memoryService';
 import { getFeatureById } from '../features/featureService';
 import { saveRoundtableSummary } from '../outline/outlineService';
+import { addIssueComment } from '../plane/planeService';
 import { getEffortForAgent, getModelForAgent, normalizeAgentRole, ROUNDTABLE_SUMMARY_MODEL } from '../agents/modelConfig';
 import { modelExtras, refusalNotice, textOf, type Effort } from '../llm/modelParams';
 import { recordCall, type CallMeta } from '../llm/usageLog';
@@ -379,6 +380,28 @@ async function runDiscussionSession(params: {
   }
 }
 
+/** Short roundtable outcome for a Plane comment; the full write-up is in the wiki. */
+function formatSummaryComment(topic: string, summary: RoundtableSummary, wikiUrl: string | null): string {
+  const list = (items: string[]) => (items.length ? items.map((i) => `- ${i}`).join('\n') : '- None');
+  const actions = Object.entries(summary.actionItems)
+    .filter(([, items]) => items.length > 0)
+    .map(([agent, items]) => items.map((i) => `- ${agent}: ${i}`).join('\n'))
+    .join('\n');
+  return [
+    `## Roundtable: ${topic}`,
+    '',
+    '### Decisions',
+    list(summary.decisions),
+    '',
+    '### Open conflicts',
+    list(summary.openConflicts),
+    '',
+    '### Action items',
+    actions || '- None',
+    ...(wikiUrl ? ['', `Full summary: ${wikiUrl}`] : []),
+  ].join('\n');
+}
+
 /**
  * Finalizes a discussion session: persists status, summarizes the full
  * transcript so far, saves to Outline, and emits the closing SSE events.
@@ -403,10 +426,11 @@ async function finishRoundtableSession(params: {
   const summary = await summarizeRoundtable(roundtableId, featureId, topic, orderedAgents);
 
   let outlineSaved = false;
+  let wikiUrl: string | null = null;
+  const feature = getFeatureById(featureId);
   try {
-    const feature = getFeatureById(featureId);
     if (feature) {
-      await saveRoundtableSummary({
+      const doc = await saveRoundtableSummary({
         featureName: feature.name,
         topic,
         summary: '',
@@ -416,6 +440,7 @@ async function finishRoundtableSession(params: {
         agentRoles: orderedAgents.map((a) => normalizeAgentRole(a.role)),
       });
       outlineSaved = true;
+      wikiUrl = `${(process.env.OUTLINE_BASE_URL ?? 'http://localhost:3002').replace(/\/$/, '')}${doc.url}`;
     }
   } catch (err) {
     console.error(
@@ -424,7 +449,22 @@ async function finishRoundtableSession(params: {
     );
   }
 
-  onEvent(`data: ${JSON.stringify({ type: 'summary', summary, outline: { saved: outlineSaved } })}\n\n`);
+  // Leave the outcome on the Plane work item the discussion was about, so it
+  // is visible where the work is tracked. Best effort, like the wiki save.
+  let planeCommented = false;
+  if (feature?.jira_type === 'issue') {
+    try {
+      await addIssueComment('narrator', featureId, formatSummaryComment(topic, summary, wikiUrl));
+      planeCommented = true;
+    } catch (err) {
+      console.error(
+        '[Plane] Failed to comment roundtable summary:',
+        err instanceof Error ? err.message : err
+      );
+    }
+  }
+
+  onEvent(`data: ${JSON.stringify({ type: 'summary', summary, outline: { saved: outlineSaved }, plane: { commented: planeCommented } })}\n\n`);
 
   return summary;
 }

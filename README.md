@@ -233,7 +233,8 @@ backend/
     outline/
       outlineService.ts # Outline wiki integration
     plane/
-      planeService.ts   # Plane issue tracker integration
+      planeService.ts   # Plane sync plus per-agent create / update / comment
+      planeHtml.ts      # Plane description HTML <-> plain text
     dataExport/
       dataExportService.ts # Runs ../nadir-agents-data/snapshot.ps1 on demand, tracks job status
     routes/
@@ -243,7 +244,7 @@ backend/
       roundtable.ts         # POST /api/roundtable/start (SSE), GET/POST /api/roundtable/:id
       diagrams.ts            # Proxies the standalone diagram-tool app
       outline.ts              # Outline wiki proxy
-      plane.ts                  # Plane issue tracker proxy
+      plane.ts                  # Plane sync, browse, and per-agent writes
       dataExport.ts               # POST /api/data-export/run, GET /api/data-export/status
       usage.ts                    # GET /api/usage/summary, GET /api/usage/chats/:id
       models.ts                   # GET /api/models/status
@@ -272,6 +273,10 @@ backend/
 | POST | `/api/roundtable/start` | Start a roundtable (SSE response) |
 | GET | `/api/roundtable/:id` | Get roundtable with all turns |
 | POST | `/api/roundtable/:id/terminate` | Manually terminate active roundtable |
+| POST | `/api/plane/sync` | Pull Plane work items (title, state, description, ID) and cycles into features |
+| POST | `/api/plane/issues` | Create a Plane work item as an agent (`role`, `name`, `description?`, `state?`, `priority?`) |
+| PATCH | `/api/plane/issues/:featureId` | Edit a work item's `name`, `description`, `state` or `priority` as an agent (`role`) |
+| POST | `/api/plane/issues/:featureId/comments` | Comment on a work item as an agent (`role`, `text`) |
 | GET | `/api/diagrams/list` | List diagrams (proxied from diagram-tool) |
 | GET | `/api/diagrams/:id/agent-format` | Get a diagram's machine-readable text (proxied from diagram-tool) |
 | GET | `/api/usage/summary` | Usage totals and breakdowns (query: `days` = number or `all`, `kind`) |
@@ -496,6 +501,30 @@ cd backend
 npx tsx scripts/eval-retrieval.ts --generate 60   # writes data/eval/ (gitignored: it quotes chats)
 npx tsx scripts/eval-retrieval.ts
 ```
+
+## Plane integration
+
+Plane work items sync into the `features` table (title, state, description
+and Plane's own ID). Agents can also write back, the same way they write to
+the Outline wiki:
+
+- **Each agent edits as its own Plane user**, so Plane's history shows who
+  changed what. Set `PLANE_TOKEN_NARRATOR`, `PLANE_TOKEN_ARCHITECT` and
+  `PLANE_TOKEN_UXUI` to API tokens of those users; an agent without one falls
+  back to `PLANE_API_TOKEN`. The users must be members of the project, not
+  only the workspace. The analyst is read-only, as in Outline.
+- **Create, edit, comment; never delete.** Writes take plain text with
+  `#` headings and `-` bullets, converted to Plane's HTML. `state` accepts a
+  Plane state name ("In Progress"), a state group (`started`) or an app status
+  (`active`). Each write updates the local feature row straight away.
+- **Roundtables leave their outcome on the issue.** When a roundtable is about
+  a Plane work item, the narrator posts the decisions, open conflicts and
+  action items as a comment, with a link to the full summary in the wiki.
+
+Local bot users need email only to sign up. Point Plane's SMTP at the Outline
+stack's Mailpit (`podman network connect plane_default outline-outline-mailpit-1`,
+then host `outline-outline-mailpit-1`, port 1025, no auth) and use any
+`@nadir.test` address.
 
 ## Feature Lifecycle
 
