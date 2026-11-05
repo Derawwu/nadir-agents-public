@@ -42,10 +42,43 @@ export type MemoryType = 'decision' | 'lore' | 'technical' | 'visual' | 'flag' |
 
 // ─── SSE event types emitted by the backend ──────────────────────────────────
 
+/** What an action card shows before the user approves or declines a write. */
+export interface ActionPreview {
+  title: string;
+  fields: { label: string; value: string }[];
+  body?: string;
+}
+
+export type ToolCallStatus = 'pending' | 'done' | 'error' | 'rejected' | 'skipped';
+
+/** One tool the agent called while writing a reply. */
+export interface ToolCall {
+  id: number;
+  runId: number;
+  round: number;
+  name: string;
+  kind: 'read' | 'write';
+  status: ToolCallStatus;
+  summary: string | null;
+  url: string | null;
+  preview: ActionPreview | null;
+}
+
+/** A reply paused until the user decides on its actions. */
+export interface PendingRun {
+  runId: number;
+  text: string;
+  sources: ContextSource[];
+  toolCalls: ToolCall[];
+}
+
 export type ChatSSEEvent =
   | { type: 'chunk'; text: string }
   | { type: 'sources'; sources: ContextSource[] }
-  | { type: 'done'; conversationId: number; slug: string | null }
+  | { type: 'tool'; call: ToolCall }
+  | { type: 'approval'; runId: number; calls: ToolCall[] }
+  | { type: 'retract'; chars: number }
+  | { type: 'done'; conversationId: number; slug: string | null; awaitingRunId: number | null }
   | { type: 'title'; conversationId: number; title: string; slug: string }
   | { type: 'error'; error: string };
 
@@ -152,6 +185,7 @@ export interface StoredMessage {
   content: string;
   images?: MessageImageRef[];
   contextSources?: ContextSource[];
+  toolCalls?: ToolCall[];
   created_at: string;
 }
 
@@ -172,6 +206,7 @@ export interface Chat {
 export interface ChatDetail {
   chat: Chat;
   messages: StoredMessage[];
+  pendingRun: PendingRun | null;
 }
 
 export async function fetchChats(agentId: number, includeArchived = false): Promise<Chat[]> {
@@ -336,6 +371,18 @@ export function sendChatMessage(
   onEvent: (event: ChatSSEEvent) => void
 ): () => void {
   return postSSE<ChatSSEEvent>(`${BASE}/chat/message`, params, onEvent);
+}
+
+/**
+ * Approves or declines a paused reply's actions (one decision per pending
+ * call) and streams the rest of the reply with the same events as a message.
+ */
+export function resumeRun(
+  runId: number,
+  decisions: Record<number, 'approve' | 'reject'>,
+  onEvent: (event: ChatSSEEvent) => void
+): () => void {
+  return postSSE<ChatSSEEvent>(`${BASE}/chat/runs/${runId}/resume`, { decisions }, onEvent);
 }
 
 /** Uploads a pasted image (as a data URL) and returns its stored filename + URL. */

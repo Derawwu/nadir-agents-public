@@ -10,16 +10,26 @@
 import Anthropic from '@anthropic-ai/sdk';
 import db from '../db/connection';
 import { getAgentById } from '../agents/agentService';
-import { buildChatContext } from '../agents/promptBuilder';
+import { buildChatContext, withCacheBreakpoint } from '../agents/promptBuilder';
 import { saveMemory, type MemoryType } from '../agents/memoryService';
 import { getEffortForAgent, getModelForAgent, normalizeAgentRole, TITLE_MODEL } from '../agents/modelConfig';
-import { modelExtras, refusalNotice, textOf } from '../llm/modelParams';
+import { modelExtras, textOf } from '../llm/modelParams';
 import type { StoredImage } from './imageStore';
 import { slugifyTitle } from './slug';
-import { maybeUpdateSummary } from './chatSummary';
 import { recordCall } from '../llm/usageLog';
-import { indexNewMessages } from '../retrieval/indexer';
 import type { ContextSource } from '../retrieval/context';
+import { isToolUseEnabled } from '../tools';
+import {
+  abandonOpenRuns,
+  getPendingRun,
+  getRunConversation,
+  getToolCallsByMessage,
+  resumeRun,
+  startRun,
+  type PendingRunView,
+  type RunIO,
+  type ToolCallView,
+} from './agentRun';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -196,6 +206,10 @@ export interface SendMessageParams {
   onChunk: (chunk: string) => void;
   /** Called once, before streaming starts, with what retrieval added to the request. */
   onSources?: (sources: ContextSource[]) => void;
+  /** Tool activity: finished calls, and writes waiting for approval. */
+  onTool?: RunIO['onTool'];
+  onApproval?: RunIO['onApproval'];
+  onRetract?: RunIO['onRetract'];
 }
 
 export interface SendMessageResult {
@@ -203,11 +217,14 @@ export interface SendMessageResult {
   fullResponse: string;
   /** True when the chat still has the default title and should be auto-named. */
   needsTitle: boolean;
+  /** Set when the reply paused for the user to approve actions. */
+  awaitingRunId: number | null;
 }
 
 /**
- * Sends a message in a chat, streams the response via onChunk,
- * and persists both messages to the DB.
+ * Sends a message in a chat and streams the reply via onChunk. The reply is
+ * an agent run (chat/agentRun.ts): it may call tools, and pauses when a write
+ * needs approval. Both messages are persisted.
  */
 export async function sendMessage(params: SendMessageParams): Promise<SendMessageResult> {
   const agent = getAgentById(params.agentId);
@@ -222,9 +239,12 @@ export async function sendMessage(params: SendMessageParams): Promise<SendMessag
   chat ??= createChat({ agentId: params.agentId, featureId: params.featureId });
   const conversationId = chat.id;
 
+  // A reply still waiting for approval is closed first, so it stays before this message.
+  abandonOpenRuns(conversationId);
+
   const agentRole = normalizeAgentRole(agent.role);
 
-  const { system, messages, strategy, sources } = await buildChatContext({
+  const { system, messages, strategy, sources, retrievalFilter } = await buildChatContext({
     agentSystemPrompt: agent.system_prompt,
     agentId: params.agentId,
     agentRole,
@@ -247,73 +267,61 @@ export async function sendMessage(params: SendMessageParams): Promise<SendMessag
 
   const model = getModelForAgent(agentRole);
   const effort = getEffortForAgent(agentRole);
-  const extras = modelExtras(model, effort);
-  console.log(`[${agentRole}] Using model: ${model} (effort ${effort})`);
+  const toolsOn = isToolUseEnabled();
+  console.log(`[${agentRole}] Using model: ${model} (effort ${effort}, tools ${toolsOn ? 'on' : 'off'})`);
 
-  let fullResponse = '';
-  const startedAt = Date.now();
-  let firstTokenAt: number | null = null;
+  // With tools, later rounds resend this turn: a breakpoint on it lets them
+  // read its retrieved context from cache (system + history are the other two).
+  if (toolsOn) messages[messages.length - 1] = withCacheBreakpoint(messages[messages.length - 1]!);
 
-  // max_tokens covers adaptive thinking as well as the visible reply.
-  const stream = anthropic.messages.stream(
+  const outcome = await startRun(
     {
-      model,
-      max_tokens: 32000,
-      system,
-      messages,
-      ...extras.body,
-    } as Anthropic.MessageStreamParams,
-    { headers: extras.headers }
+      agentId: params.agentId,
+      conversationId,
+      state: {
+        model,
+        effort,
+        system,
+        messages,
+        round: 0,
+        text: '',
+        sources,
+        strategy,
+        toolsEnabled: toolsOn,
+        ctx: { agentId: params.agentId, role: agentRole, conversationId, featureId: chat.feature_id, retrievalFilter },
+      },
+    },
+    { onChunk: params.onChunk, onTool: params.onTool, onApproval: params.onApproval, onRetract: params.onRetract }
   );
 
-  for await (const event of stream) {
-    if (
-      event.type === 'content_block_delta' &&
-      event.delta.type === 'text_delta'
-    ) {
-      firstTokenAt ??= Date.now();
-      const chunk = event.delta.text;
-      fullResponse += chunk;
-      params.onChunk(chunk);
-    }
-  }
-
-  const finalMessage = await stream.finalMessage();
-  recordCall(
-    { kind: 'chat', agentId: params.agentId, conversationId, strategy },
-    finalMessage,
-    { startedAt, firstTokenAt }
-  );
-  if (finalMessage.stop_reason === 'max_tokens') {
-    console.warn(`[Chat] Response truncated by max_tokens limit (model: ${model})`);
-  }
-  // A safety-classifier decline arrives as a normal response with
-  // stop_reason "refusal" (after any server-side fallback also declined).
-  if (finalMessage.stop_reason === 'refusal') {
-    const notice = refusalNotice(finalMessage);
-    console.warn(`[Chat] Model declined (model: ${model})`);
-    const sep = fullResponse ? '\n\n' : '';
-    fullResponse += sep + notice;
-    params.onChunk(sep + notice);
-  }
-
-  // Persist complete assistant response after streaming finishes.
-  db.prepare('INSERT INTO messages (conversation_id, role, content, context_sources) VALUES (?, ?, ?, ?)').run(
+  return {
     conversationId,
-    'assistant',
-    fullResponse,
-    sources.length > 0 ? JSON.stringify(sources) : null
-  );
-  touchChat(conversationId);
+    fullResponse: outcome.text,
+    needsTitle: chat.title === DEFAULT_CHAT_TITLE,
+    awaitingRunId: outcome.status === 'awaiting_approval' ? outcome.runId : null,
+  };
+}
 
-  // Add both new messages to the retrieval index (background).
-  void indexNewMessages();
+export interface ResumeResult {
+  conversationId: number;
+  fullResponse: string;
+  awaitingRunId: number | null;
+}
 
-  // Fold old turns into the running summary in the background, so it is
-  // ready for the next message. Never awaited: the reply is already done.
-  void maybeUpdateSummary(conversationId, params.agentId);
-
-  return { conversationId, fullResponse, needsTitle: chat.title === DEFAULT_CHAT_TITLE };
+/** Continues a paused reply after the user decided on its actions. */
+export async function resumeReply(
+  runId: number,
+  decisions: Record<number, boolean>,
+  io: RunIO
+): Promise<ResumeResult> {
+  const conversationId = getRunConversation(runId);
+  if (conversationId === null) throw new Error(`Run not found: ${runId}`);
+  const outcome = await resumeRun(runId, decisions, io);
+  return {
+    conversationId,
+    fullResponse: outcome.text,
+    awaitingRunId: outcome.status === 'awaiting_approval' ? outcome.runId : null,
+  };
 }
 
 function fallbackTitle(text: string): string {
@@ -388,7 +396,14 @@ export interface HistoryMessage {
   content: string;
   images?: MessageImageRef[];
   contextSources?: ContextSource[];
+  /** Tools the agent used while writing this reply. */
+  toolCalls?: ToolCallView[];
   created_at: string;
+}
+
+/** A reply of this chat that is paused until the user approves or declines its actions. */
+export function getChatPendingRun(chatId: number): PendingRunView | null {
+  return getPendingRun(chatId);
 }
 
 /** Returns a chat's full message history in chronological order. */
@@ -400,6 +415,7 @@ export function getChatMessages(chatId: number): HistoryMessage[] {
        ORDER BY created_at ASC, id ASC`
     )
     .all(chatId) as unknown as MessageRow[];
+  const toolCalls = getToolCallsByMessage(chatId);
 
   return rows.map((row) => ({
     id: row.id,
@@ -413,6 +429,7 @@ export function getChatMessages(chatId: number): HistoryMessage[] {
         }))
       : undefined,
     contextSources: row.context_sources ? (JSON.parse(row.context_sources) as ContextSource[]) : undefined,
+    toolCalls: toolCalls.get(row.id),
   }));
 }
 

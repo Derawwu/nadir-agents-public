@@ -287,4 +287,48 @@ export function runMigrations(): void {
   if (!msgCols.has('context_sources')) {
     db.exec('ALTER TABLE messages ADD COLUMN context_sources TEXT');
   }
+
+  // ── Migration: agent tool use (see src/tools/ and chat/agentRun.ts) ─────
+  // agent_runs: one row per chat reply that can use tools. While a write
+  // action waits for approval the run is 'awaiting_approval' and `state`
+  // holds the exact request (system, messages incl. thinking blocks) so the
+  // reply resumes where it stopped.
+  // tool_calls: every tool the agent called, with its input, result and,
+  // for writes, the preview the user approved or rejected. message_id is set
+  // once the reply is saved.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS agent_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      conversation_id INTEGER NOT NULL REFERENCES conversations(id),
+      agent_id INTEGER NOT NULL REFERENCES agents(id),
+      status TEXT NOT NULL CHECK(status IN ('running', 'awaiting_approval', 'done', 'error', 'abandoned')),
+      state TEXT NOT NULL,
+      message_id INTEGER REFERENCES messages(id),
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_runs_conversation ON agent_runs(conversation_id, status);
+
+    CREATE TABLE IF NOT EXISTS tool_calls (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      run_id INTEGER NOT NULL REFERENCES agent_runs(id),
+      conversation_id INTEGER NOT NULL REFERENCES conversations(id),
+      message_id INTEGER REFERENCES messages(id),
+      round INTEGER NOT NULL,
+      tool_use_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK(kind IN ('read', 'write')),
+      input TEXT NOT NULL,
+      preview TEXT,
+      status TEXT NOT NULL CHECK(status IN ('pending', 'done', 'error', 'rejected', 'skipped')),
+      summary TEXT,
+      link_url TEXT,
+      result TEXT,
+      duration_ms INTEGER,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      decided_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_tool_calls_message ON tool_calls(message_id);
+    CREATE INDEX IF NOT EXISTS idx_tool_calls_run ON tool_calls(run_id);
+  `);
 }

@@ -63,6 +63,8 @@ export function MessageBubble({
   }
 
   const isUser = role === 'user';
+  // A reply that so far only proposed actions has no text yet: show just its footer.
+  const hasBody = Boolean(content) || Boolean(images?.length) || Boolean(isStreaming);
 
   return (
     <div className={`flex ${isUser ? 'justify-end' : 'justify-start'} mb-4`}>
@@ -71,6 +73,7 @@ export function MessageBubble({
           <div className="text-xs text-gray-500 mb-1 ml-1">{agentName}</div>
         )}
 
+        {hasBody && (
         <div
           className={`px-4 py-3 rounded-lg text-sm whitespace-pre-wrap break-words leading-relaxed
             ${isUser
@@ -96,15 +99,18 @@ export function MessageBubble({
             <span className="inline-block w-1.5 h-4 ml-1 bg-accent animate-pulse align-middle" />
           )}
         </div>
+        )}
 
+        {hasBody && (
         <div className={`flex items-center gap-2 mt-1 ${isUser ? 'justify-end mr-1' : 'ml-1'}`}>
           <span className="text-[11px] text-gray-500">{formatMessageTime(createdAt)}</span>
           {!isStreaming && <CopyButton content={content} />}
         </div>
+        )}
 
         {footer}
 
-        {!isUser && !isStreaming && onSaveMemory && (
+        {!isUser && !isStreaming && onSaveMemory && content && (
           <div className="flex items-center gap-2 mt-1.5 ml-1">
             <select
               className="text-xs bg-surface-100 border border-border rounded px-1.5 py-1 text-gray-400

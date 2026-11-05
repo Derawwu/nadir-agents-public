@@ -426,8 +426,8 @@ export function browseFeatures(params: { query?: string; status?: string }): Fea
     values.push(params.status);
   }
   if (params.query) {
-    conditions.push('(name LIKE ? OR description LIKE ?)');
-    values.push(`%${params.query}%`, `%${params.query}%`);
+    conditions.push('(name LIKE ? OR description LIKE ? OR jira_key LIKE ?)');
+    values.push(`%${params.query}%`, `%${params.query}%`, `%${params.query}%`);
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
