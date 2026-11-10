@@ -135,11 +135,12 @@ for /L %%i in (1,1,30) do (
   if not errorlevel 1 exit /b 0
   timeout /t 1 /nobreak >nul
 )
-echo       Ollama did not open :11434 yet - the backend will retry when it is up.
+echo       Ollama did not open :11434 yet - retrieval uses keyword search until it does.
 exit /b 0
 
 REM Pulls the embedding model the backend uses (EMBEDDING_MODEL in
-REM backend\.env, default qwen3-embedding:0.6b) if Ollama is up and lacks it.
+REM backend\.env, default qwen3-embedding:0.6b) if Ollama is up and lacks it,
+REM then loads it into memory so the first chat message gets full retrieval.
 :ensure_embedding_model
 call :is_listening 11434
 if errorlevel 1 exit /b 0
@@ -150,11 +151,26 @@ for /f "tokens=1,* delims==" %%a in ('findstr /B /C:"EMBEDDING_MODEL=" D:\nadir-
 "%OLLAMA_EXE%" show "%EMBED_MODEL%" >nul 2>nul
 if not errorlevel 1 (
   echo       Embedding model %EMBED_MODEL% is present.
-  exit /b 0
+  goto :warm_embedding_model
 )
 echo       Pulling embedding model %EMBED_MODEL% ^(first run only^)...
 "%OLLAMA_EXE%" pull "%EMBED_MODEL%"
-if errorlevel 1 echo       Pull failed - retrieval uses keyword search until the model is available.
+if errorlevel 1 (
+  echo       Pull failed - retrieval uses keyword search until the model is available.
+  exit /b 0
+)
+
+REM Ollama loads a model on its first request, which takes ~10s - longer than
+REM the backend waits for a query embedding (12s timeout incl. the request), so
+REM the first message after a cold start would fall back to keyword search.
+REM An embed request with no input just loads the model; keep_alive matches the
+REM backend's, so it stays loaded while the app is in use. Runs in the
+REM background so the remaining services start meanwhile.
+:warm_embedding_model
+set "CURL_EXE=%SystemRoot%\System32\curl.exe"
+if not exist "%CURL_EXE%" set "CURL_EXE=curl"
+echo       Loading %EMBED_MODEL% into memory in the background...
+start "" /b "%CURL_EXE%" -s -o nul -X POST http://127.0.0.1:11434/api/embed -d "{\"model\":\"%EMBED_MODEL%\",\"keep_alive\":\"30m\"}" >nul 2>nul
 exit /b 0
 
 REM Sets errorlevel 0 if something is listening on TCP port %1 (IPv4 or IPv6).
