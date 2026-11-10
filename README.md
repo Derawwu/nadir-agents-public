@@ -22,10 +22,11 @@ diagram-tool/    Standalone node-graph diagram/dependency tracker
 outline/         Docker Compose for the Outline wiki, port 3002
 plane/           Vendored upstream clone of Plane (issue tracker, port 80).
                  Its own git repo — not tracked here, see plane/README.md
-scripts/         Backup/restore/seed PowerShell + Node scripts
+scripts/         Backup/restore/seed PowerShell + Node scripts, stop-port.ps1 for shutdown.bat
 docs/            Planning docs (e.g. the diagram-tool build prompt)
 backups/         Local DB backups (gitignored)
-start.bat        Launches Plane, Outline, and the agent backend/frontend
+start.bat        Launches Plane, Outline, Ollama, and the agent backend/frontend
+shutdown.bat     Stops everything start.bat started
 ```
 
 `plane/` and `backups/` are excluded from version control — `plane/` is its own
@@ -97,8 +98,13 @@ snapshot after every commit here — see "Automatic data export" below.
 ### 4. Run
 
 Easiest: run `start.bat` from the repo root — it starts Podman, Plane, Outline,
-the agent backend/frontend, and the diagram-tool backend/editor in separate
-windows. To start the diagram-tool on its own:
+Ollama (pulling the embedding model on first run, if Ollama is installed), the
+agent backend/frontend, and the diagram-tool backend/editor in separate
+windows. Steps whose service is already up are skipped, so it is safe to re-run.
+
+`shutdown.bat` stops it all again: the dev servers (with their watcher and
+npm processes), Ollama, the Outline and Plane containers (`docker-compose stop`,
+so no data is removed) and the Podman machine. To start the diagram-tool on its own:
 
 ```bash
 cd diagram-tool/backend && npm run dev   # http://localhost:3010
