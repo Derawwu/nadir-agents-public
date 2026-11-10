@@ -119,23 +119,18 @@ for /f "delims=" %%p in ('where ollama 2^>nul') do if not defined OLLAMA_EXE set
 if not defined OLLAMA_EXE if exist "%LOCALAPPDATA%\Programs\Ollama\ollama.exe" set "OLLAMA_EXE=%LOCALAPPDATA%\Programs\Ollama\ollama.exe"
 exit /b 0
 
-REM Starts Ollama if it is installed: the tray app from the default install
-REM location, else `ollama serve`. Waits up to 15s for its port.
+REM Starts the Ollama server if it is installed. Uses `ollama serve` in its own
+REM minimised window, like the other services, rather than "ollama app.exe",
+REM which opens the Ollama desktop GUI. Waits up to 30s for its port.
 :start_ollama
-set "OLLAMA_APP=%LOCALAPPDATA%\Programs\Ollama\ollama app.exe"
 call :find_ollama
-if exist "%OLLAMA_APP%" (
-  echo [4/8] Starting Ollama ^(embeddings^)...
-  start "" "%OLLAMA_APP%"
-) else (
-  if not defined OLLAMA_EXE (
-    echo [4/8] Ollama not installed - skipping ^(retrieval uses keyword search only^).
-    exit /b 0
-  )
-  echo [4/8] Starting Ollama ^(embeddings^)...
-  start "Ollama" /min "%OLLAMA_EXE%" serve
+if not defined OLLAMA_EXE (
+  echo [4/8] Ollama not installed - skipping ^(retrieval uses keyword search only^).
+  exit /b 0
 )
-for /L %%i in (1,1,15) do (
+echo [4/8] Starting Ollama server ^(embeddings^)...
+start "Ollama" /min "%OLLAMA_EXE%" serve
+for /L %%i in (1,1,30) do (
   call :is_listening 11434
   if not errorlevel 1 exit /b 0
   timeout /t 1 /nobreak >nul
